@@ -21,7 +21,14 @@ function App() {
   // output panel from updating on every keystroke.
   const [submitted, setSubmitted] = useState(null)
 
-  function handleSubmit(e) {
+  // courses holds the array returned by the backend, e.g. ["CSC108", "MAT137"].
+  // Kept separate from `submitted` so we can show a loading state between
+  // the form submit and the API response arriving.
+  const [courses, setCourses] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleSubmit(e) {
     // Prevent the default browser form navigation
     e.preventDefault()
 
@@ -33,6 +40,32 @@ function App() {
       .filter(Boolean)
 
     setSubmitted({ interests: parsedInterests, workload })
+    setCourses(null)
+    setError(null)
+    setLoading(true)
+
+    try {
+      // POST to the FastAPI backend running on port 8000.
+      // The body shape must match the RequestData Pydantic model in main.py.
+      const response = await fetch('http://localhost:8000/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interests: parsedInterests, workload }),
+      })
+
+      if (!response.ok) {
+        // Surface the HTTP error text so it's visible during development
+        throw new Error(`Server error: ${response.status}`)
+      }
+
+      const data = await response.json()
+      // data.courses is the array from the backend, e.g. ["CSC108", "MAT137"]
+      setCourses(data.courses)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -140,46 +173,37 @@ function App() {
           </form>
 
           {/* ── Output panel ──
-              Only rendered after the first submission. This is where the AI
-              response will eventually appear — for now it just echoes input. */}
+              Shown after first submit. Displays loading state, errors, and
+              eventually the course list returned by the backend. */}
           {submitted && (
             <div className="bg-white/10 border border-white/20 rounded-2xl p-6 space-y-4">
               <h3 className="text-white font-semibold text-sm uppercase tracking-widest">
-                Your inputs
+                Recommended Courses
               </h3>
 
-              <div className="space-y-3">
-                <div>
-                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">
-                    Interests
-                  </p>
-                  {/* Render each interest as a small chip */}
-                  <div className="flex flex-wrap gap-2">
-                    {submitted.interests.length > 0
-                      ? submitted.interests.map((interest) => (
-                          <span
-                            key={interest}
-                            className="bg-white/20 text-white text-xs font-medium px-3 py-1 rounded-full"
-                          >
-                            {interest}
-                          </span>
-                        ))
-                      : <span className="text-white/40 text-sm italic">None entered</span>
-                    }
-                  </div>
-                </div>
+              {/* Loading spinner — shown while waiting for the API response */}
+              {loading && (
+                <p className="text-white/60 text-sm italic">Loading...</p>
+              )}
 
-                <div>
-                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">
-                    Workload
-                  </p>
-                  <p className="text-white text-sm">
-                    {/* Look up the human-readable label from the options list */}
-                    {WORKLOAD_OPTIONS.find((o) => o.value === submitted.workload)?.label
-                      ?? submitted.workload}
-                  </p>
+              {/* Error state — surface API/network errors visibly during dev */}
+              {error && (
+                <p className="text-red-300 text-sm">{error}</p>
+              )}
+
+              {/* Course chips — one per course code returned by the backend */}
+              {courses && (
+                <div className="flex flex-wrap gap-2">
+                  {courses.map((course) => (
+                    <span
+                      key={course}
+                      className="bg-white/20 text-white text-xs font-medium px-3 py-1 rounded-full"
+                    >
+                      {course}
+                    </span>
+                  ))}
                 </div>
-              </div>
+              )}
             </div>
           )}
 
