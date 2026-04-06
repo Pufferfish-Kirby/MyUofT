@@ -1,4 +1,15 @@
 # ok this is where we will define our scoring system
+class AcademicHistory:
+    courses: list[Course]
+
+    def __init__(self, courses: list[Course]) -> None:
+        self._courses = courses
+
+        def get_courses(self) -> list[Course]:
+            return self._courses
+        def add_course(self, course: Course) -> None:
+            self._courses.append(course)
+
 class Course:
 
     name: str
@@ -108,6 +119,86 @@ def score_course(course: "Course", preferences: dict) -> float:
 
     # Clamp to [0, 10] as a safety net, then round to 1 decimal place.
     return round(max(0.0, min(10.0, raw)), 1)
+
+
+def recommend_courses(course_list: list["Course"], preferences: dict, top_n: int = None) -> list[tuple["Course", float]]:
+    """
+    Return courses sorted by their score (highest first).
+
+    Each item in the returned list is a (course, score) tuple so the caller
+    can display the score alongside the name without re-computing it.
+
+    Args:
+        course_list:  the pool of courses to rank (e.g. all courses in the DB)
+        preferences:  same dict passed to score_course
+        top_n:        if given, only return the top N results; otherwise return all
+
+    This is intentionally a thin wrapper around score_course — the real
+    intelligence lives there. As we add more signals (interest match, major fit)
+    this function stays the same; only score_course changes.
+    """
+    scored = [(course, score_course(course, preferences)) for course in course_list]
+
+    # Sort descending by score; use course name as tiebreaker for stable ordering.
+    scored.sort(key=lambda pair: (-pair[1], pair[0].name))
+
+    return scored[:top_n] if top_n is not None else scored
+
+
+# How far a course's difficulty/workload can be from the student's preference
+# before we stop calling it a "match". Keeps explain() language honest —
+# we won't say "matches your difficulty preference" if the gap is large.
+_DIFFICULTY_MATCH_THRESHOLD = 2   # out of a 1–10 scale
+_WORKLOAD_MATCH_THRESHOLD   = 1   # out of a 1–5 scale
+_GOOD_RATING_THRESHOLD      = 4.0 # out of 5 — "well rated"
+
+
+def explain(course: "Course", preferences: dict) -> str:
+    """
+    Generate a plain-English explanation of why a course was recommended.
+
+    This is rule-based for now (fast, transparent, no AI cost). Each rule
+    appends a short phrase; the phrases are joined into one readable sentence.
+    When we add interest tags and major-fit signals later, new rules slot in
+    here without touching the scoring logic.
+
+    Returns an empty string if nothing notable matches — callers should handle
+    that gracefully (e.g. "No specific reasons found.").
+    """
+    reasons = []
+
+    preferred_difficulty = preferences.get("preferred_difficulty", 5)
+    preferred_workload   = preferences.get("preferred_workload", 3)
+
+    # --- Difficulty ---
+    diff_gap = abs(course.difficulty - preferred_difficulty)
+    if diff_gap <= _DIFFICULTY_MATCH_THRESHOLD:
+        reasons.append("matches your preferred difficulty level")
+    elif course.difficulty < preferred_difficulty:
+        # Student wants harder courses; this one is lighter — still useful to flag.
+        reasons.append("lighter than your usual preference (good for a busy semester)")
+    else:
+        reasons.append("more challenging than your preference (great if you want a stretch)")
+
+    # --- Workload ---
+    work_gap = abs(course.workload - preferred_workload)
+    if work_gap <= _WORKLOAD_MATCH_THRESHOLD:
+        reasons.append("fits your workload preference")
+    elif course.workload < preferred_workload:
+        reasons.append("lower workload than you requested")
+    else:
+        reasons.append("heavier workload than you requested")
+
+    # --- Rating ---
+    # Only mention rating when it exists and is actually notable; silence is
+    # better than "no rating yet" cluttering every explanation.
+    if course.rating is not None:
+        if course.rating >= _GOOD_RATING_THRESHOLD:
+            reasons.append(f"well rated by students ({course.rating}/5)")
+        elif course.rating < 3.0:
+            reasons.append(f"lower student rating ({course.rating}/5) — worth considering")
+
+    return ", ".join(reasons)
 
 
 courses = [
