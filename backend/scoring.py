@@ -5,10 +5,10 @@ class AcademicHistory:
     def __init__(self, courses: list[Course]) -> None:
         self._courses = courses
 
-        def get_courses(self) -> list[Course]:
-            return self._courses
-        def add_course(self, course: Course) -> None:
-            self._courses.append(course)
+    def get_courses(self) -> list[Course]:
+        return self._courses
+    def add_course(self, course: Course) -> None:
+        self._courses.append(course)
 
 class Course:
 
@@ -17,12 +17,14 @@ class Course:
     prerequisites: list[str]
     corequisites: list[str]
     credits: int
+    tags: list[str]
     workload: str
     difficulty: int
     rating: float
     reviews: list[str]
-    def __init__(self, name: str, description: str, prerequisites: list[str] = None, corequisites: list[str] = None, credits: float = 0.5, workload: int = 3, difficulty: int = 5, rating: float = None, reviews: list[str] = None) -> None:
-        self.name = name
+    def __init__(self, name: str, tags: list[str], description: str, prerequisites: list[str] = None, corequisites: list[str] = None, credits: float = 0.5, workload: int = 3, difficulty: int = 5, rating: float = None, reviews: list[str] = None) -> None:
+        self._name = name
+        self.tags = tags
         self.description = description
         self.prerequisites = prerequisites if prerequisites is not None else []
         self.corequisites = corequisites if corequisites is not None else []
@@ -40,14 +42,17 @@ class Course:
         return self._corequisites
     def get_credits(self) -> float:
         return self._credits
+    def is_eligible(self, completed: list[str]) -> bool:
+        return all(prereq in completed for prereq in self.prerequisites)
 
 # Weights must sum to 1.0. Difficulty and workload are proximity-based
 # (how close the course is to what the student wants), while rating is
 # quality-based (higher is always better). Keeping them separate makes
 # it easy to add new signals (e.g., interest match, major relevance) later.
-WEIGHT_DIFFICULTY = 0.40
-WEIGHT_WORKLOAD   = 0.40
-WEIGHT_RATING     = 0.20
+INTEREST_WEIGHT = 0.35
+WEIGHT_DIFFICULTY = 0.25
+WEIGHT_WORKLOAD   = 0.25
+WEIGHT_RATING     = 0.15
 
 # Scales for each field — used to normalize raw values to 0–10.
 DIFFICULTY_MIN, DIFFICULTY_MAX = 1, 10   # course.difficulty range
@@ -58,6 +63,9 @@ RATING_MIN,     RATING_MAX     = 1, 5    # course.rating range (e.g., UofT eval 
 # than penalizing it for lacking data.
 RATING_NEUTRAL = (RATING_MIN + RATING_MAX) / 2
 
+def _interest_score(course, interests):
+    matches = len(set(course.tags) & set(interests))
+    return (matches / len(course.tags)) * 10 if course.tags else 0
 
 def _proximity_score(value: int | float, preferred: int | float, min_val: float, max_val: float) -> float:
     """
@@ -97,9 +105,10 @@ def score_course(course: "Course", preferences: dict) -> float:
         preferred_workload   (int, 1–5):  how much weekly effort they want
 
     Weights:
-        difficulty  40%  — proximity to preferred difficulty
-        workload    40%  — proximity to preferred workload
-        rating      20%  — normalized course rating (higher is always better)
+        difficulty  25%  — proximity to preferred difficulty
+        workload    25%  — proximity to preferred workload
+        rating      15%  — normalized course rating (higher is always better)
+        interest    35%  — how well the course matches the student's interests
 
     Future signals (not yet implemented) will slot in here once we have
     interest vectors and program-fit data, and weights will be adjusted.
@@ -110,11 +119,13 @@ def score_course(course: "Course", preferences: dict) -> float:
     diff_score   = _proximity_score(course.difficulty, preferred_difficulty, DIFFICULTY_MIN, DIFFICULTY_MAX)
     work_score   = _proximity_score(course.workload,   preferred_workload,   WORKLOAD_MIN,   WORKLOAD_MAX)
     rating_score = _rating_score(course.rating)
+    interest_score = _interest_score(course, preferences.get("interests", []))
 
     raw = (
         WEIGHT_DIFFICULTY * diff_score +
         WEIGHT_WORKLOAD   * work_score +
-        WEIGHT_RATING     * rating_score
+        WEIGHT_RATING     * rating_score +
+        INTEREST_WEIGHT   * interest_score
     )
 
     # Clamp to [0, 10] as a safety net, then round to 1 decimal place.
@@ -137,7 +148,10 @@ def recommend_courses(course_list: list["Course"], preferences: dict, top_n: int
     intelligence lives there. As we add more signals (interest match, major fit)
     this function stays the same; only score_course changes.
     """
-    scored = [(course, score_course(course, preferences)) for course in course_list]
+    eligible = [
+    c for c in course_list 
+    if c.is_eligible(preferences.get("completed_courses", []))]
+    scored = [(course, score_course(course, preferences)) for course in eligible]
 
     # Sort descending by score; use course name as tiebreaker for stable ordering.
     scored.sort(key=lambda pair: (-pair[1], pair[0].name))
