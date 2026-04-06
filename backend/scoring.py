@@ -1,15 +1,4 @@
 # ok this is where we will define our scoring system
-class AcademicHistory:
-    courses: list[Course]
-
-    def __init__(self, courses: list[Course]) -> None:
-        self._courses = courses
-
-    def get_courses(self) -> list[Course]:
-        return self._courses
-    def add_course(self, course: Course) -> None:
-        self._courses.append(course)
-
 class Course:
 
     name: str
@@ -44,6 +33,17 @@ class Course:
         return self._credits
     def is_eligible(self, completed: list[str]) -> bool:
         return all(prereq in completed for prereq in self.prerequisites)
+
+class AcademicHistory:
+    courses: list[Course]
+
+    def __init__(self, courses: list[Course]) -> None:
+        self._courses = courses
+
+    def get_courses(self) -> list[Course]:
+        return self._courses
+    def add_course(self, course: Course) -> None:
+        self._courses.append(course)
 
 # Weights must sum to 1.0. Difficulty and workload are proximity-based
 # (how close the course is to what the student wants), while rating is
