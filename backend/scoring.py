@@ -1,18 +1,6 @@
 # ok this is where we will define our scoring system
 class Course:
-
-    name: str
-    description: str
-    prerequisites: list[str]
-    corequisites: list[str]
-    credits: int
-    tags: list[str]
-    workload: str
-    difficulty: int
-    rating: float
-    reviews: list[str]
-    def __init__(
-        self,
+    def __init__(self,
         name: str,
         description: str,
         tags: list[str] | None = None,
@@ -27,9 +15,9 @@ class Course:
         self._name = name
         self.tags = tags if tags is not None else []
         self.description = description
-        self.prerequisites = prerequisites if prerequisites is not None else []
-        self.corequisites = corequisites if corequisites is not None else []
-        self.credits = credits
+        self._prerequisites = prerequisites if prerequisites is not None else []
+        self._corequisites = corequisites if corequisites is not None else []
+        self._credits = credits
         self.workload = workload
         self.difficulty = difficulty
         self.rating = rating
@@ -46,7 +34,7 @@ class Course:
     def is_eligible(self, completed: list[str]) -> bool:
         return all(prereq in completed for prereq in self.prerequisites)
 
-class AcademicHistory:
+class AcademicHistory:  # this is here once we can link the history to get courses they can take/can't take
     courses: list[Course]
 
     def __init__(self, courses: list[Course]) -> None:
@@ -131,7 +119,7 @@ def _interest_score(course: "Course", interests: list[str]) -> float:
     # Build a single lowercase blob of all searchable text for this course.
     # We include tags, description, and the course code itself so that e.g.
     # "CSC" in the name can be matched by a "computer science" interest expansion.
-    searchable = " ".join(course.tags + [course.description, course._name]).lower()
+    searchable = " ".join(course.tags + [course.description, course.get_name]).lower()
 
     matched = 0
     for raw_interest in interests:
@@ -305,7 +293,7 @@ def explain_structured(course: "Course", preferences: dict) -> list[dict]:
 
     # --- Workload ---
     work_gap = abs(course.workload - preferred_workload)
-    if work_gap <= _WORKLOAD_MATCH_THRESHOLD:
+    if work_gap == _WORKLOAD_MATCH_THRESHOLD:
         reasons.append({
             "type": "workload",
             "message": "fits your workload preference",
@@ -314,13 +302,19 @@ def explain_structured(course: "Course", preferences: dict) -> list[dict]:
     elif course.workload < preferred_workload:
         reasons.append({
             "type": "workload",
-            "message": "lower workload than you requested",
+            "message": "lower workload than you requested, but can still work",
             "positive": True,
+        })
+    elif course.workload > preferred_workload and 1 < work_gap <= 2:
+        reasons.append({
+            "type": "workload",
+            "message": "heavier workload than you requested, but still manageable",
+            "positive": False,
         })
     else:
         reasons.append({
             "type": "workload",
-            "message": "heavier workload than you requested",
+            "message": "a lot heavier than you requested",
             "positive": False,
         })
 
