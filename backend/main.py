@@ -61,7 +61,7 @@ class ChatResponse(BaseModel):
 async def chat(data: ChatRequest) -> ChatResponse:
     # Rebuild the full message list: prior turns (from the frontend) + the new user message.
     # Anthropic expects a flat list of {"role": ..., "content": ...} dicts.
-    messages = [{"role": msg.role, "content": msg.content} for msg in data.history]
+    messages = [{'role': msg.role, 'content': msg.content} for msg in data.history]
     messages.append({"role": "user", "content": data.message})
 
     try:
@@ -72,8 +72,6 @@ async def chat(data: ChatRequest) -> ChatResponse:
             messages=messages,
         )
     except anthropic.APIError as e:
-        # Surface the error to the caller rather than swallowing it silently —
-        # the frontend can show a user-friendly message based on the status code.
         raise HTTPException(status_code=502, detail=f"Claude API error: {e}")
 
     return ChatResponse(response=result.content[0].text)

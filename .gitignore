@@ -226,3 +226,4 @@ backend/courses.json
 backend/courses_slim.json
 backend/data_pulling.py
 backend/practice.py
+backend/consolidate_courses.py
