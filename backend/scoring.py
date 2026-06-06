@@ -67,26 +67,44 @@ WEIGHT_RATING     = 0.20
 # Phase 2 will replace this with embedding-based similarity; for now a
 # manually curated map is cheap, transparent, and easy to extend.
 INTEREST_SYNONYMS: dict[str, list[str]] = {
-    "coding":       ["programming", "python", "java", "software", "computing", "code", "computer"],
-    "programming":  ["coding", "python", "java", "software", "computing", "code", "computer"],
-    "math":         ["mathematics", "calculus", "algebra", "statistics", "analysis", "proofs", "proof",
-                     "theorem", "discrete", "linear", "differential", "logic", "rigorous", "number theory"],
-    "mathematics":  ["math", "calculus", "algebra", "statistics", "analysis", "proofs", "proof",
-                     "theorem", "discrete", "linear", "differential", "logic", "rigorous"],
-    "stats":        ["statistics", "probability", "analysis", "stochastic", "inference", "regression"],
-    "data":         ["statistics", "data science", "machine learning", "analysis", "python", "dataset"],
-    "ai":           ["machine learning", "artificial intelligence", "neural", "deep learning",
-                     "natural language", "computer vision", "reinforcement", "prediction"],
-    "biology":      ["life sciences", "biochemistry", "molecular", "genetics", "cell"],
-    "chemistry":    ["organic", "inorganic", "biochemistry", "molecular", "reactions"],
-    "psychology":   ["behavior", "social-science", "mental", "cognition", "research"],
-    "writing":      ["english", "literature", "composition", "rhetoric", "essay"],
-    "history":      ["historical", "civilization", "political", "social"],
-    "economics":    ["micro", "macro", "finance", "markets", "policy"],
-    "business":     ["management", "finance", "marketing", "economics", "strategy"],
-    "design":       ["art", "visual", "creative", "ux", "interface"],
-    "networks":     ["systems", "computer", "distributed", "internet", "protocol"],
-    "security":     ["cryptography", "systems", "networks", "privacy", "cyber"],
+    # General programming intents — these are the "hub" terms everything else maps to
+    "coding":           ["programming", "python", "java", "software", "computing", "code", "computer",
+                         "algorithms", "web", "javascript"],
+    "programming":      ["coding", "python", "java", "software", "computing", "code", "computer",
+                         "algorithms", "web", "javascript"],
+    # Specific languages/technologies — map back to the hub so "python" == "coding" in matching power
+    "python":           ["programming", "coding", "software", "computing", "code", "computer", "scripting"],
+    "java":             ["programming", "coding", "software", "computing", "code", "computer", "object-oriented"],
+    "javascript":       ["programming", "coding", "software", "web", "computing", "code", "computer"],
+    "software":         ["programming", "coding", "python", "java", "computing", "code", "computer"],
+    "computing":        ["programming", "coding", "python", "java", "software", "code", "computer"],
+    "algorithms":       ["programming", "computing", "discrete", "complexity", "data structures", "problem"],
+    "web":              ["programming", "software", "html", "css", "javascript", "frontend", "interface"],
+    # Math family
+    "math":             ["mathematics", "calculus", "algebra", "statistics", "analysis", "proofs", "proof",
+                         "theorem", "discrete", "linear", "differential", "logic", "rigorous", "number theory"],
+    "mathematics":      ["math", "calculus", "algebra", "statistics", "analysis", "proofs", "proof",
+                         "theorem", "discrete", "linear", "differential", "logic", "rigorous"],
+    "stats":            ["statistics", "probability", "analysis", "stochastic", "inference", "regression"],
+    # Data / AI family
+    "data":             ["statistics", "data science", "machine learning", "analysis", "python", "dataset"],
+    "ai":               ["machine learning", "artificial intelligence", "neural", "deep learning",
+                         "natural language", "computer vision", "reinforcement", "prediction"],
+    "machine learning": ["ai", "artificial intelligence", "neural", "deep learning", "data",
+                         "prediction", "statistics"],
+    # Sciences
+    "biology":          ["life sciences", "biochemistry", "molecular", "genetics", "cell"],
+    "chemistry":        ["organic", "inorganic", "biochemistry", "molecular", "reactions"],
+    "psychology":       ["behavior", "social-science", "mental", "cognition", "research"],
+    # Humanities / Social
+    "writing":          ["english", "literature", "composition", "rhetoric", "essay"],
+    "history":          ["historical", "civilization", "political", "social"],
+    "economics":        ["micro", "macro", "finance", "markets", "policy"],
+    "business":         ["management", "finance", "marketing", "economics", "strategy"],
+    # Other
+    "design":           ["art", "visual", "creative", "ux", "interface"],
+    "networks":         ["systems", "computer", "distributed", "internet", "protocol"],
+    "security":         ["cryptography", "systems", "networks", "privacy", "cyber"],
 }
 
 # Scales for each field — used to normalize raw values to 0–10.
@@ -455,3 +473,76 @@ def explain(course: "Course", preferences: dict) -> str:
             reasons.append("does not directly match your stated interests — consider as a breadth requirement")
 
     return ", ".join(reasons) if reasons else "No specific reasons found."
+
+def _extract_interests_from_text(text: str) -> list[str]:
+    """
+    Pull interest keywords out of free text by matching against INTEREST_SYNONYMS.
+
+    Two passes so multi-word phrases like "machine learning" are caught before
+    their component words ("machine", "learning") are checked individually.
+    Once a phrase is matched it's blanked out so the single-word pass doesn't
+    double-count the same concept.
+
+    Returns deduplicated list in first-seen order.
+    """
+    text_lower = text.lower()
+    found: list[str] = []
+    seen: set[str] = set()
+
+    # Full vocabulary: keys of the map plus every synonym value
+    # WHY include values: a student might type "programming" directly, which is a
+    # synonym value but not a key — we still want to treat it as a known interest.
+    all_known: set[str] = set(INTEREST_SYNONYMS.keys())
+    for synonyms in INTEREST_SYNONYMS.values():
+        all_known.update(synonyms)
+
+    # Pass 1: longest multi-word phrases first so "machine learning" wins over "machine"
+    multi_word = sorted((t for t in all_known if " " in t), key=len, reverse=True)
+    for phrase in multi_word:
+        if phrase in text_lower and phrase not in seen:
+            found.append(phrase)
+            seen.add(phrase)
+            text_lower = text_lower.replace(phrase, " ")
+
+    # Pass 2: remaining single words — use regex to strip punctuation before matching
+    for word in re.findall(r"[a-z]+", text_lower):
+        if word in all_known and word not in seen:
+            found.append(word)
+            seen.add(word)
+
+    return found
+
+
+def search_by_message(message: str, course_list: list["Course"], top_n: int = 5) -> list[tuple["Course", float]]:
+    """
+    Find the most interest-relevant courses for a free-text message.
+
+    Extracts known interest terms from the message, scores every course by
+    interest only (difficulty/workload/rating are skipped — those require
+    per-course data we don't have yet), then returns the top N with score > 0.
+
+    WHY interest-only scoring here vs. score_course():
+        score_course() needs preferred_difficulty and preferred_workload from
+        the student's profile. A raw chat message has neither, so we only use
+        the interest signal. This is meant for quick contextual lookup (e.g.
+        injecting relevant courses into a Claude prompt), not the full ranked
+        recommendation flow — that still goes through /recommend.
+    """
+    interests = _extract_interests_from_text(message)
+
+    # Fallback: if no synonym-map terms matched, use the raw words from the
+    # message directly as search terms. This handles specific proper nouns and
+    # subject words ("shakespeare", "ethics", "stoicism") that will never be
+    # in the synonym map but DO appear in course titles and descriptions.
+    # WHY filter len > 2: drops articles/prepositions ("a", "in", "to") that
+    # would match too broadly and add noise rather than signal.
+    if not interests:
+        interests = [w for w in re.findall(r"[a-z]+", message.lower()) if len(w) > 2]
+
+    if not interests:
+        return []
+
+    scored = [(course, _interest_score(course, interests)) for course in course_list]
+    scored = [(c, s) for c, s in scored if s > 0]
+    scored.sort(key=lambda pair: (-pair[1], pair[0].get_course_code()))
+    return scored[:top_n] if top_n is not None else scored
