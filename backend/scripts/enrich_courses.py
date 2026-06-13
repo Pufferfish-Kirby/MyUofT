@@ -2,7 +2,7 @@
 Enriches a sample of courses with AI-estimated difficulty and workload.
 
 Uses Claude Haiku to estimate how intellectually demanding a course is (1-10)
-and how many hours per week it typically demands (1-5). This data will
+and how many hours per week it typically demands (1-10). This data will
 eventually power recommendations like "this is a heavy semester" warnings.
 
 Run from the backend/ directory:
@@ -99,6 +99,16 @@ def estimate_scores(
 
     prompt = f"""You are estimating difficulty and weekly workload for a University of Toronto CS course planner.
 
+Calibrate every score from the perspective of an AVERAGE UofT CS undergraduate student — someone who:
+- Has completed the courses listed as prerequisites, but is not especially advanced beyond them
+- Has medium-low to no programming experience (would be comfortable with Python by end of first year, starting to learn C/systems topics by 3rd year)
+- Has a solid but not exceptional math background (can pass 1st year proofs and linear algebra with reasonable effort, but is not a math major)
+- Is NOT a top-10% student or a graduate researcher — think the typical student who passes their courses with reasonable effort
+- Earns roughly a C+ (68%) on average, consistent with the typical grade distribution in UofT courses — use this as a calibration anchor for what "manageable with effort" actually looks like
+- Experiences real time pressure from assignments, term tests, and projects like most undergrads do
+
+Do NOT calibrate for the star student who breezes through everything, or the struggling student who finds every course hard. Aim for the middle of the bell curve.
+
 Course: {code} — {name}
 Description: {description if description else "(no description available)"}
 Prerequisites: {prereqs if prereqs else "None"}
@@ -106,22 +116,29 @@ Prerequisites: {prereqs if prereqs else "None"}
 Return ONLY a JSON object — no markdown fences, no extra text:
 {{
   "difficulty": <integer 1–10>,
-  "workload": <integer 1–5>,
-  "reasoning": "<one sentence explaining the estimate>"
+  "workload": <integer 1–10>,
+  "reasoning": "<one sentence, max 20 words, no semicolons — explain the dominant factor only> Don't let the condensed reasoning affect your ratings."
 }}
 
-Difficulty scale:
-  1–3 = introductory, light math, no prior CS assumed
-  4–6 = intermediate, some proofs or systems concepts required
-  7–9 = advanced, significant mathematical maturity or prior upper-year courses needed
-  10  = graduate-level or unusually demanding
+Difficulty scale (from the average CS student's perspective):
+  1–3 = introductory — little to no prior CS or math assumed; concepts are self-contained and approachable
+  4–6 = intermediate — builds on 1st/2nd year foundations; requires genuine engagement with proofs, systems, or algorithms but is manageable with consistent effort
+  7–9 = advanced — demands real mathematical maturity or strong systems intuition that most students only develop over time; upper-year prerequisites are actually needed
+  10  = graduate-level or unusually demanding even by 4th-year standards
 
-Workload scale:
-  1 = light     (2–4 hrs/week outside class)
-  2 = moderate  (4–6 hrs/week)
-  3 = standard  (6–8 hrs/week)
-  4 = heavy     (8–12 hrs/week)
-  5 = very heavy (12+ hrs/week, e.g. project-intensive capstone)"""
+Workload scale (hours per week outside of lecture/tutorial, for an average student):
+  1–2  = very light  (≈1–3 hrs/week  — occasional readings or very small, infrequent assignments)
+  3–4  = light       (≈3–5 hrs/week  — regular readings or short problem sets most weeks)
+  5–6  = moderate    (≈6–9 hrs/week  — consistent weekly assignments with meaningful depth; a typical 300-level course)
+  7–8  = heavy       (≈10–14 hrs/week — large programming projects, frequent deliverables, or difficult problem sets; most students feel real time pressure)
+  9–10 = very heavy  (15+ hrs/week   — capstone or unusually output-intensive course; students routinely report it consuming most of their semester)
+
+Calibration anchors for workload:
+  CSC108 (intro Python, no projects, biweekly labs)         → 2
+  CSC207 (Java OOP with a large multi-week project)         → 5
+  CSC369 (OS with three heavy C assignments)                → 7
+  CSC494/495 (capstone research/project — full-semester)    → 9
+Use these anchors to sanity-check your estimate. Err toward the lower end of each band when uncertain — it is better to underestimate slightly than to inflate scores."""
 
     response = client.messages.create(
         model="claude-haiku-4-5",
@@ -180,7 +197,7 @@ def main() -> None:
         scores = estimate_scores(client, course)
 
         if scores["difficulty"] is not None:
-            print(f"  difficulty={scores['difficulty']}/10  workload={scores['workload']}/5")
+            print(f"  difficulty={scores['difficulty']}/10  workload={scores['workload']}/10")
         else:
             print(f"  ERROR: {scores['difficulty_reasoning']}")
 

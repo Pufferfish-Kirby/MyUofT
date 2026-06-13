@@ -19,7 +19,7 @@ class Course:
         prerequisites: str | None = None,
         corequisites: str | None = None,
         credits: float = 0.5,
-        workload: int = 3,
+        workload: int = 5,
         difficulty: int = 5,
         rating: float | None = None,
         reviews: list[str] | None = None,
@@ -121,7 +121,7 @@ INTEREST_SYNONYMS: dict[str, list[str]] = {
 
 # Scales for each field — used to normalize raw values to 0–10.
 DIFFICULTY_MIN, DIFFICULTY_MAX = 1, 10   # course.difficulty range
-WORKLOAD_MIN,   WORKLOAD_MAX   = 1, 5    # course.workload range
+WORKLOAD_MIN,   WORKLOAD_MAX   = 1, 10   # course.workload range
 RATING_MIN,     RATING_MAX     = 1, 5    # course.rating range (e.g., UofT eval scale)
 
 # When a course has no rating yet, we assume a neutral mid-point rather
@@ -235,7 +235,7 @@ def score_course(course: "Course", preferences: dict, interest_score: float | No
 
     Expected keys in `preferences`:
         preferred_difficulty (int, 1–10): how hard the student wants courses to be
-        preferred_workload   (int, 1–5):  how much weekly effort they want
+        preferred_workload   (int, 1–10): how much weekly effort they want
 
     Weights:
         difficulty  22.5%  — proximity to preferred difficulty
@@ -354,7 +354,7 @@ def recommend_courses(course_list: list["Course"], preferences: dict, top_n: int
 # before we stop calling it a "match". Keeps explain() language honest —
 # we won't say "matches your difficulty preference" if the gap is large.
 _DIFFICULTY_MATCH_THRESHOLD = 2   # out of a 1–10 scale
-_WORKLOAD_MATCH_THRESHOLD   = 1   # out of a 1–5 scale
+_WORKLOAD_MATCH_THRESHOLD   = 2   # out of a 1–10 scale
 _GOOD_RATING_THRESHOLD      = 4.0 # out of 5 — "well rated"
 
 
