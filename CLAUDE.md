@@ -14,7 +14,7 @@ MyUofT is an AI-powered course planning tool that helps University of Toronto st
 - **Frontend:** React with TypeScript (Vite)
 - **Backend:** Python with FastAPI
 - **Database:** SQLite (via SQLAlchemy ORM)
-- **AI:** Anthropic Claude API (claude-sonnet-4-20250514) for conversational course advising
+- **AI:** Anthropic Claude API (claude-sonnet-4-6) for conversational course advising
 - **Styling:** Tailwind CSS
 
 ### Future (Phase 2+ — Production)
@@ -82,6 +82,44 @@ Course:
   tags: list[str]     # AI-generated topic tags for search
 ```
 
+### Program Data Schema (actual — from `backend/app/data/programs.json`)
+```
+Program:
+  program_code: str      # e.g., "ASMAJ1689"
+  name: str              # e.g., "Computer Science Major (Science Program)"
+  type: str              # "Major" | "Minor" | "Specialist"
+  enrolment_requirements:
+    general: str         # general enrolment description (open vs. limited, prerequisites)
+    pathways: list       # optional — list of admission paths, each with:
+                         #   heading: str, description: str, requirements: list[str]
+    notes: list[str]     # optional clarifying notes
+  asip: str | null       # Arts & Science Internship Program info (null if not applicable)
+  completion_requirements:
+    summary: str         # full credit total + requirements as scraped text,
+                         # e.g., "(8.0 credits, including...)"
+    first_year:          # optional — structured first-year requirements
+      credits: str
+      heading: str
+      requirements: list[str]
+      notes: list[str]
+    second_year:         # optional — same structure as first_year
+      credits: str
+      heading: str
+      requirements: list[str]
+      notes: list[str]
+    upper_years:         # optional — upper-year requirements
+      credits: str
+      heading: str
+      requirements: list[str]
+      notes: list[str]
+      groups: list       # optional — for Group A / B / C course selections
+      criteria: list[str] # optional — selection criteria
+      integrative_activity: str  # optional
+    transfer_credits: str    # optional
+    combining: str           # optional — notes on combining with other programs
+    engineering_courses: str # optional
+```
+
 ---
 
 ## Coding Conventions
@@ -94,7 +132,7 @@ Course:
 - Async endpoints where appropriate (especially AI calls)
 - Tests with `pytest`; aim for service-level tests, not just unit tests
 - Environment variables via `.env` files loaded with `python-dotenv`
-- Keep route handlers thin — business logic goes in service modules under `app/services/`
+- Keep route handlers thin — business logic goes in service modules (currently flat in `backend/`, will migrate to `app/services/` in Phase 2)
 
 ### TypeScript (Frontend)
 - Strict TypeScript — no `any` types unless absolutely unavoidable
@@ -116,6 +154,11 @@ Course:
 
 ## Project Structure
 
+> **Note:** The structure below reflects the actual current state. The aspirational
+> `app/models/`, `app/schemas/`, `app/routers/`, `app/services/` subdirectories do
+> not exist yet — they are the target for Phase 2 when the backend grows beyond its
+> current flat layout.
+
 ```
 myuoft/
 ├── CLAUDE.md
@@ -124,104 +167,56 @@ myuoft/
 ├── .gitignore
 │
 ├── backend/
+│   ├── main.py              # FastAPI app entry point, all routes live here for now
+│   ├── chat_db.py           # SQLite chat session management (init, create, list, messages)
+│   ├── reviews_db.py        # Course reviews database (save/get reviews)
+│   ├── scoring.py           # Course scoring, recommendation logic, and search by message
+│   ├── embeddings.py        # Embedding generation and vector search
+│   ├── build_embeddings.py  # One-off script to build the embeddings index from courses.json
+│   ├── data_pulling.py      # Data loading utilities (reads courses.json into memory)
+│   ├── consolidate_courses.py  # Script to merge/deduplicate scraped course data
+│   ├── debug_retrieval.py   # Dev debugging script for retrieval pipeline
+│   ├── test_retrieval.py    # Dev test script for retrieval pipeline
+│   ├── myuoft.db            # SQLite database (chat sessions, reviews) — not committed
+│   │
 │   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py              # FastAPI app entry point
-│   │   ├── config.py            # Settings and env vars
-│   │   ├── database.py          # SQLAlchemy engine and session
-│   │   │
-│   │   ├── models/              # SQLAlchemy ORM models
-│   │   │   ├── __init__.py
-│   │   │   ├── course.py
-│   │   │   ├── program.py
-│   │   │   ├── user.py
-│   │   │   └── plan.py
-│   │   │
-│   │   ├── schemas/             # Pydantic request/response schemas
-│   │   │   ├── __init__.py
-│   │   │   ├── course.py
-│   │   │   ├── chat.py
-│   │   │   └── plan.py
-│   │   │
-│   │   ├── routers/             # API route handlers
-│   │   │   ├── __init__.py
-│   │   │   ├── courses.py
-│   │   │   ├── chat.py
-│   │   │   ├── plans.py
-│   │   │   └── programs.py
-│   │   │
-│   │   ├── services/            # Business logic
-│   │   │   ├── __init__.py
-│   │   │   ├── ai_advisor.py    # Claude API integration
-│   │   │   ├── course_search.py
-│   │   │   ├── plan_generator.py
-│   │   │   └── prerequisite_checker.py
-│   │   │
-│   │   └── data/                # Static data, scraped JSON, seed scripts
-│   │       ├── courses.json
-│   │       └── programs.json
+│   │   └── data/                # Static scraped data (committed to repo)
+│   │       ├── courses.json     # All Arts & Science course records
+│   │       └── programs.json    # All Arts & Science program requirements
 │   │
 │   ├── scripts/
-│   │   └── scrape_calendar.py   # Course data scraper
+│   │   ├── scrape_programs.py   # Scraper for program/degree requirements
+│   │   ├── enrich_courses.py    # Enriches a batch of courses with AI-generated tags
+│   │   └── enrich_all_courses.py  # Runs enrichment across the full catalog
 │   │
-│   ├── tests/
-│   │   ├── test_courses.py
-│   │   ├── test_chat.py
-│   │   └── test_plans.py
-│   │
-│   ├── requirements.txt
-│   └── pyproject.toml
+│   ├── venv/                    # Python virtual environment (not committed)
+│   └── requirements.txt
+│
+│   # Future Phase 2 structure (does not exist yet):
+│   # backend/app/__init__.py
+│   # backend/app/main.py
+│   # backend/app/config.py
+│   # backend/app/database.py
+│   # backend/app/models/        (SQLAlchemy ORM models)
+│   # backend/app/schemas/       (Pydantic request/response schemas)
+│   # backend/app/routers/       (API route handlers)
+│   # backend/app/services/      (business logic modules)
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   │
-│   │   ├── components/
-│   │   │   ├── Chat/
-│   │   │   │   ├── ChatWindow.tsx
-│   │   │   │   ├── MessageBubble.tsx
-│   │   │   │   └── SuggestionChips.tsx
-│   │   │   ├── Plan/
-│   │   │   │   ├── PlanTimeline.tsx
-│   │   │   │   ├── SemesterCard.tsx
-│   │   │   │   └── CourseSlot.tsx
-│   │   │   ├── Search/
-│   │   │   │   ├── CourseSearch.tsx
-│   │   │   │   └── CourseCard.tsx
-│   │   │   └── Layout/
-│   │   │       ├── Navbar.tsx
-│   │   │       └── Sidebar.tsx
-│   │   │
-│   │   ├── pages/
-│   │   │   ├── Home.tsx
-│   │   │   ├── ChatPage.tsx
-│   │   │   ├── PlanPage.tsx
-│   │   │   └── ExplorePage.tsx
-│   │   │
-│   │   ├── hooks/
-│   │   │   ├── useChat.ts
-│   │   │   ├── useCourses.ts
-│   │   │   └── usePlan.ts
-│   │   │
-│   │   ├── types/
-│   │   │   ├── course.ts
-│   │   │   ├── chat.ts
-│   │   │   └── plan.ts
-│   │   │
-│   │   └── utils/
-│   │       ├── api.ts           # API client wrapper
-│   │       └── formatters.ts
+│   │   ├── App.jsx          # Main React component (currently a single-file app)
+│   │   └── main.jsx         # Vite entry point
+│   │
+│   │   # Future structure (not yet built out):
+│   │   # components/Chat/, components/Plan/, components/Search/, components/Layout/
+│   │   # pages/, hooks/, types/, utils/
 │   │
 │   ├── package.json
-│   ├── tsconfig.json
-│   ├── tailwind.config.ts
-│   └── vite.config.ts
+│   ├── vite.config.js
+│   └── postcss.config.js
 │
 └── docs/
-    ├── plans/                    # Claude Code plan files
-    ├── architecture.md
-    └── data-model.md
+    └── plans/               # Claude Code plan files
 ```
 
 ---
@@ -229,8 +224,8 @@ myuoft/
 ## AI Integration Details
 
 ### Model Selection
-- **Conversational advising (chat):** `claude-sonnet-4-20250514` — fast, cheap, good at dialogue
-- **Complex plan generation:** `claude-sonnet-4-20250514` with extended system prompt — for generating multi-year plans with constraint satisfaction
+- **Conversational advising (chat):** `claude-sonnet-4-6` — fast, cheap, good at dialogue
+- **Complex plan generation:** `claude-sonnet-4-6` with extended system prompt — for generating multi-year plans with constraint satisfaction
 - **Embeddings for course search:** Use `voyage-3` or OpenAI `text-embedding-3-small` to embed course descriptions, then store in SQLite (Phase 1) or pgvector (Phase 2)
 
 ### System Prompt Strategy
@@ -252,12 +247,12 @@ The AI advisor should receive:
 ## Development Phases
 
 ### Phase 1: Local MVP (Current)
-- [ ] Scrape and store Arts & Science course data (St. George)
-- [ ] Basic FastAPI backend with course search endpoint
-- [ ] Simple chat interface that talks to Claude API
-- [ ] Generate a basic 4-year plan from chat preferences
-- [ ] SQLite database for courses and generated plans
-- [ ] React frontend with chat UI and plan display
+- [x] Scrape and store Arts & Science course data (St. George) — `courses.json` + `programs.json` done
+- [x] Basic FastAPI backend with course search endpoint — `main.py` has course search + chat
+- [x] Simple chat interface that talks to Claude API — chat UI + sessions working
+- [ ] Generate a basic 4-year plan from chat preferences — not yet implemented
+- [x] SQLite database for courses and generated plans — `myuoft.db` with chat sessions + reviews
+- [x] React frontend with chat UI and plan display — landing page + chat UI live
 
 ### Phase 2: Smart Planning
 - [ ] Prerequisite graph and validation
@@ -308,19 +303,25 @@ CORS_ORIGINS=http://localhost:5173
 ## Commands Reference
 
 ```bash
-# Backend
+# Backend — activate the venv first (Windows)
 cd backend
+venv/Scripts/activate          # Windows; use `source venv/bin/activate` on Mac/Linux
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn main:app --reload --port 8000   # NOTE: main:app, not app.main:app
 
 # Frontend
 cd frontend
 npm install
 npm run dev
 
-# Scraping
+# Build embeddings index (run once after updating courses.json)
 cd backend
-python scripts/scrape_calendar.py
+python build_embeddings.py
+
+# Scraping / enrichment
+cd backend
+python scripts/scrape_programs.py
+python scripts/enrich_all_courses.py
 
 # Tests
 cd backend

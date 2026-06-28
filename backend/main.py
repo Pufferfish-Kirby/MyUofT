@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from scoring import recommend_courses, explain, explain_structured, search_by_message, courses as course_catalog
 from chat_db import init_db, create_session, list_sessions, get_messages, save_message, update_session_title
 from reviews_db import init_reviews_db, save_review, get_reviews
+from program_data import search_programs_by_message, load_programs
 
 # Load ANTHROPIC_API_KEY from .env so we never hardcode secrets in source.
 load_dotenv()
@@ -44,6 +45,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 #     without wiping data or raising errors.
 init_db()
 init_reviews_db()  # idempotent — creates course_reviews table if missing
+
+# Load program catalog once at startup — 169 programs, negligible memory.
+# try/except so the server starts even if programs.json is somehow missing;
+# _build_program_context() degrades gracefully when program_catalog is empty.
+try:
+    program_catalog = load_programs()
+except FileNotFoundError:
+    program_catalog = []
 
 # CORSMiddleware lets the browser make requests from the React dev server
 # (localhost:5173) to this API (localhost:8000). Without it, browsers block
@@ -121,6 +130,43 @@ def _build_course_context(message: str) -> str:
     return "\n".join(lines)
 
 
+def _build_program_context(message: str) -> str:
+    """
+    Search the program catalog for programs relevant to the user's message and
+    format them as a context block to append to the system prompt.
+
+    WHY top_n=2 instead of 5 (as for courses):
+        Each program entry includes formatted_requirements — year sections, groups,
+        and administrative notes — which is several times larger than a single
+        course line. Two programs already provides substantial context without
+        crowding out the course context block.
+
+    Returns empty string when no programs are relevant, the catalog is empty,
+    or the program embedding index hasn't been built yet (FileNotFoundError),
+    so the server degrades gracefully in all cases.
+    """
+    if not program_catalog:
+        return ""
+    try:
+        relevant = search_programs_by_message(message, program_catalog, top_n=2)
+    except FileNotFoundError:
+        # program_embeddings.npy not built yet — degrade silently
+        return ""
+    if not relevant:
+        return ""
+
+    lines = ["Relevant UofT programs for this query (use these to inform your answer):"]
+    for prog, score in relevant:
+        is_limited = "limited enrolment" in prog.enrolment_general.lower()
+        enrol_label = "limited enrolment" if is_limited else "open enrolment"
+        lines.append(
+            f"- {prog.name} [{prog.type}] ({prog.program_code}): "
+            f"{prog.completion_summary}, {enrol_label}"
+        )
+        lines.append(prog.formatted_requirements)
+    return "\n".join(lines)
+
+
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit("20/minute")
 # WHY request: Request is the first parameter:
@@ -133,12 +179,15 @@ async def chat(request: Request, data: ChatRequest) -> ChatResponse:
     messages = [{'role': msg.role, 'content': msg.content} for msg in data.history]
     messages.append({"role": "user", "content": data.message})
 
-    # Inject relevant course data into the system prompt so Claude can reference
-    # real courses by name rather than hallucinating course codes.
-    course_context = _build_course_context(data.message)
-    system_prompt = ADVISOR_SYSTEM_PROMPT
+    # Inject relevant courses and programs into the system prompt so Claude can
+    # reference real UofT data rather than hallucinating codes or requirements.
+    course_context  = _build_course_context(data.message)
+    program_context = _build_program_context(data.message)
+    system_prompt   = ADVISOR_SYSTEM_PROMPT
     if course_context:
-        system_prompt = f"{ADVISOR_SYSTEM_PROMPT}\n\n{course_context}"
+        system_prompt += f"\n\n{course_context}"
+    if program_context:
+        system_prompt += f"\n\n{program_context}"
 
     try:
         result = claude_client.messages.create(
