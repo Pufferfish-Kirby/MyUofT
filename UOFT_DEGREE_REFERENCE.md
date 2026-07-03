@@ -14,7 +14,7 @@ This file is a reference for Claude Code when building MyUofT features. It docum
 
 ### Program Combinations
 Students must enroll in a valid combination totaling at least one Specialist OR two Majors:
-- 1 Specialist
+- 1 Specialist + 1 minor
 - 2 Majors
 - 1 Major + 2 Minors
 
@@ -22,6 +22,7 @@ You CANNOT have:
 - Just 1 Major alone
 - Just minors with no Major or Specialist
 - 3 Minors with no Major
+- Specialist alone
 
 ### Program Sizes (typical)
 - **Specialist:** 12-14 FCEs of required/elective courses within the program
