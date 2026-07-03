@@ -83,18 +83,16 @@ class Course:
                 terms.append(term)
         return terms
     def is_eligible(self, completed: list[str]) -> bool:
-        # self._prerequisites is raw scraped text (e.g. "CSC108H1/ CSC148H1" or
-        # "(STA237H1, STA238H1)"), never a list -- `for prereq in
-        # self._prerequisites` iterated individual characters ('C', 'S', 'C', ...)
-        # and checked those against completed, so this was always effectively
-        # False (except when _prerequisites was "", which vacuously returned True).
-        # Extract the real course codes with the module's existing _COURSE_CODE_RE
-        # (defined below, already used by _find_courses_by_code) instead of writing
-        # a full AND/OR prerequisite parser -- recommend_courses (the only caller)
-        # just needs a "has this student completed something listed here" signal,
-        # not exact boolean-clause precision for "/" (OR) vs "," (AND) groups.
-        required_codes = _COURSE_CODE_RE.findall(self._prerequisites)
-        return all(code in completed for code in required_codes)
+        # A course is eligible only if EVERY top-level clause is satisfied
+        # (AND), and a clause is satisfied if ANY ONE of its options is fully
+        # completed (OR) -- see parse_prerequisites() for the grammar this
+        # respects (including parenthesized AND-pairs like "(STA237H1,
+        # STA238H1)", which need both codes completed together, not either).
+        clauses = parse_prerequisites(self._prerequisites)
+        return all(
+            any(all(code in completed for code in option) for option in options)
+            for options in clauses
+        )
 
     def to_text(self) -> str:
         # Joins the most signal-rich fields into one string for embedding.
@@ -862,6 +860,92 @@ def _find_courses_by_code(message: str, course_list: list["Course"]) -> list[tup
                 seen_codes.add(code)
     return found
 
+def _split_top_level(text: str, sep: str) -> list[str]:
+    """
+    Split `text` on `sep` characters that sit outside any parentheses.
+
+    WHY not str.split(sep): a raw prerequisite string like
+    "(STA237H1, STA238H1)/CSC108H1" has a comma INSIDE the parens meaning
+    "both of these together", which is a different thing from a comma at the
+    top level meaning "this clause, and separately, that clause". Plain
+    str.split can't tell those apart. Tracking paren depth while scanning
+    left-to-right lets us only split where `sep` is acting at the CURRENT
+    nesting level -- a `sep` seen while depth > 0 belongs to whatever group
+    is currently open, so it's left alone.
+    """
+    parts = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == sep and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def parse_prerequisites(text: str) -> list[list[list[str]]]:
+    """
+    Parse a raw UofT prerequisite string into a nested AND/OR structure.
+
+    UofT prerequisite text follows this grammar:
+        prereqs := clause ("," clause)*      -- ALL clauses required (AND)
+        clause  := option ("/" option)*      -- ANY ONE option satisfies (OR)
+        option  := "(" code ("," code)* ")"  -- ALL codes in the pair required (AND)
+                 | code                      -- a single course code
+
+    Returns a list of clauses; each clause is a list of options (any one of
+    which satisfies that clause); each option is a list of course codes that
+    must ALL be completed together (length 1 for a plain code, length 2+ for
+    a parenthesized AND-pair like "(STA237H1, STA238H1)").
+
+    Example:
+        "ECO220Y1/(STA237H1, STA238H1), CSC108H1/CSC148H1"
+        -> [
+             [["ECO220Y1"], ["STA237H1", "STA238H1"]],  # clause 1 (OR of 2 options)
+             [["CSC108H1"], ["CSC148H1"]],               # clause 2 (OR of 2 options)
+           ]
+        meaning: (ECO220Y1 OR (STA237H1 AND STA238H1)) AND (CSC108H1 OR CSC148H1)
+    """
+    if not text or not text.strip():
+        return []
+    return [clause for clause in (_parse_clause(c) for c in _split_top_level(text, ",")) if clause]
+
+
+def _parse_clause(text: str) -> list[list[str]]:
+    """
+    Parse one AND-clause into its OR-options: split on "/" and parse each
+    piece with _parse_option, which recurses back into _parse_clause if that
+    piece turns out to be a parenthesized group. This mutual recursion is
+    what lets the grammar handle nesting in general, even though real UofT
+    prerequisite text never goes more than one paren deep in practice.
+    """
+    options = [_parse_option(opt.strip()) for opt in _split_top_level(text, "/")]
+    return [opt for opt in options if opt]
+
+
+def _parse_option(text: str) -> list[str]:
+    """
+    Parse a single OR-option into the course code(s) it requires.
+
+    Recursive case: "(...)" -- e.g. "(STA237H1, STA238H1)" -- is a
+    parenthesized AND-group. Strip the brackets and recurse through
+    _parse_clause on the inside (the same comma/slash grammar applies inside
+    parens as at the top level), then flatten every code that comes back:
+    everything inside an AND-group must hold at once, so how it was grouped
+    internally no longer matters once we're returning to the caller.
+
+    Base case: no parens left, so pull out whatever course code(s) are here
+    with the shared _COURSE_CODE_RE.
+    """
+    if text.startswith("(") and text.endswith(")"):
+        nested = _parse_clause(text[1:-1])
+        return [code for option in nested for code in option]
+    return _COURSE_CODE_RE.findall(text)
 
 def search_by_message(message: str, course_list: list["Course"], top_n: int = 5) -> list[tuple["Course", float]]:
     """
