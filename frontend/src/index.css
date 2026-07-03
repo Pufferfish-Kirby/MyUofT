@@ -15,8 +15,19 @@
   --color-uoft-accent: #4BA3F5;
 }
 
-body {
+/* WHY overflow-x: hidden + a matching background here (not just on the app's
+   root div): mobile browsers can report a slightly-too-wide layout viewport
+   (rounding/scrollbar quirks, or the URL bar collapsing mid-scroll), which
+   makes html/body horizontally scrollable by a few px. Without this, that
+   sliver reveals the browser's default white background outside our navy
+   app shell — exactly the "white on the side when I scroll" symptom. */
+html, body {
+  overflow-x: hidden;
+  background-color: #002A5C;
   margin: 0;
+}
+
+body {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }

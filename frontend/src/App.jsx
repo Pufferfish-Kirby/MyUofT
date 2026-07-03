@@ -473,7 +473,12 @@ function App() {
 
   return (
     // Full-height dark-blue background — this is UofT's primary brand colour (#002A5C)
-    <div className="min-h-screen bg-uoft-blue flex flex-col">
+    // WHY min-h-dvh, not min-h-screen (100vh): mobile browsers resize their
+    // address bar/toolbar while scrolling, but 100vh is fixed to the *largest*
+    // possible viewport at load. That mismatch is what caused the white gap
+    // visible when scrolling on phones — 100dvh tracks the actual visible
+    // viewport instead, so it never overshoots and leaves a sliver exposed.
+    <div className="min-h-dvh bg-uoft-blue flex flex-col">
 
       {/* ── Navbar ──
           Slightly translucent + blurred so content scrolling beneath it gives a
@@ -758,12 +763,8 @@ function App() {
               </div>
             </div>
 
-            {/* ── Chat panel ──
-                WHY pb-16 on mobile: the input form otherwise sits flush
-                against the bottom edge, right under the fixed Feedback FAB
-                (bottom-4 = 16px + ~48px circle). md:pb-0 removes it once the
-                FAB has a whole sidebar's width of clearance to its left. */}
-            <div className="flex-1 flex flex-col min-w-0 pb-16 md:pb-0">
+            {/* ── Chat panel ── */}
+            <div className="flex-1 flex flex-col min-w-0">
               <div className="mb-4">
                 <div className="flex items-center gap-2 md:justify-center">
                   {/* Hamburger toggle — md:hidden because the sidebar is
@@ -1264,20 +1265,27 @@ function App() {
         </div>
       </main>
 
-      {/* Floating feedback button — fixed to viewport so it's reachable from any tab */}
+      {/* Floating feedback button — fixed to viewport so it's reachable from any tab.
+          WHY hidden on mobile specifically while the chat tab is open: on phone
+          widths there's no room for it to sit anywhere near the message
+          composer without overlapping the Send button (padding tweaks kept
+          proving fragile against mobile browsers' dynamic toolbar height).
+          Hiding it there removes the overlap entirely instead of chasing
+          exact pixel clearance; it's still one tap away via the other tabs. */}
       <a
         href={FEEDBACK_FORM_URL}
         target="_blank"
         rel="noopener noreferrer"
-        className="
+        className={`
+          ${activeTab === 'chat' ? 'hidden md:flex' : 'flex'}
           fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-50
-          flex items-center gap-2
+          items-center gap-2
           bg-uoft-accent text-uoft-blue font-semibold
           rounded-full p-3 sm:px-4 sm:py-2.5 text-sm
           shadow-lg shadow-black/30
           hover:brightness-110 hover:-translate-y-0.5
           active:translate-y-0 transition-all
-        "
+        `}
       >
         {/* Pencil icon. WHY icon-only below sm: the full "Feedback" pill was
             wide enough to sit directly on top of the review-search bar on
