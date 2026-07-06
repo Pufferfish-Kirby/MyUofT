@@ -12,6 +12,7 @@ why some queries miss relevant courses. Includes:
 from scoring import (
     search_by_message, courses, _extract_interests_from_text, _strip_filler,
     _detect_year_level, _strip_year_phrases, _expand_query,
+    _detect_breadth_categories, _detect_difficulty_bias,
 )
 from embeddings import semantic_search
 
@@ -188,6 +189,14 @@ def test_full_pipeline(message: str, top_n: int = 5) -> None:
     year = _detect_year_level(message)
     print(f"\n  1. Detected year level   : {year if year is not None else '(none — no year filter applied)'}")
 
+    # Breadth-category and difficulty-bias detection also run on the raw
+    # message, before any stripping — printed here alongside year for the
+    # same "see every intermediate transformation" reason this function exists.
+    breadth = _detect_breadth_categories(message)
+    print(f"  1b. Detected breadth cats : {breadth if breadth is not None else '(none — no breadth filter applied)'}")
+    difficulty_bias = _detect_difficulty_bias(message)
+    print(f"  1c. Detected difficulty  : {difficulty_bias if difficulty_bias is not None else '(none — no difficulty re-ranking)'}")
+
     # Step 2: stop-word stripping
     stripped = _strip_filler(message)
     print(f"  2. After stop-word strip : {repr(stripped)}")
@@ -225,6 +234,9 @@ PIPELINE_QUERIES = [
     "introductory programming",
     "second year ML courses",
     "first year math",
+    "easy breadth 2 courses",
+    "challenging breadth 2 and 4 courses",
+    "introductory breadth category 1",
 ]
 
 

@@ -10,7 +10,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from scoring import recommend_courses, explain, explain_structured, search_by_message, courses as course_catalog
+from scoring import recommend_courses, explain, explain_structured, search_by_message, courses as course_catalog, BREADTH_CATEGORIES
 from chat_db import init_db, create_session, list_sessions, get_messages, save_message, update_session_title, delete_messages_from, session_belongs_to
 from reviews_db import init_reviews_db, save_review, get_reviews
 from program_data import search_programs_by_message, load_programs, Program
@@ -106,6 +106,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Single source of truth for the breadth category names shown to Claude —
+# built from the same BREADTH_CATEGORIES dict that scoring.py filters
+# against, so the reference table can never drift out of sync with the
+# actual filtering logic.
+_BREADTH_REFERENCE = "\n".join(f"  {n}. {name}" for n, name in sorted(BREADTH_CATEGORIES.items()))
+
 # The advisor system prompt is injected on every request rather than stored
 # per-session because we're stateless for now. It gives Claude the context it
 # needs to answer as a UofT academic advisor instead of a generic assistant.
@@ -143,7 +149,19 @@ the student knows what a course depends on.
 
 The Academic Calendar (https://artsci.calendar.utoronto.ca/) is a supplement for
 verifying specifics like enrolment rules or the latest offering — suggest it to
-confirm details, never as a reason to avoid answering."""
+confirm details, never as a reason to avoid answering.
+
+BREADTH CATEGORIES — the 5 official Arts & Science breadth requirements are:
+{breadth_reference}
+A course's own breadth string in the context below may be worded slightly
+differently (capitalization, minor phrasing) — use this table to name the
+category correctly regardless.
+
+FORMATTING — when listing multiple courses, always put real content on the
+same line as the bullet marker; never emit a bullet with nothing after it.
+Each bullet should name the course code and give at least one concrete reason
+it fits. If no course in the context actually matches what was asked, say so
+in a sentence instead of producing an empty or placeholder bullet.""".format(breadth_reference=_BREADTH_REFERENCE)
 
 
 class ChatMessage(BaseModel):
@@ -233,6 +251,13 @@ def _build_course_context(message: str, extra_codes: set[str] | None = None) -> 
         description, the breadth category, and the terms it runs in lets Claude
         reason about fit and sequencing without inventing anything.
 
+    WHY difficulty/workload are now included:
+        Before this, a query like "what are easy breadth courses" gave Claude
+        zero grounded numeric data to support an "easy" claim with — it had to
+        guess, producing vague or empty-feeling answers. course.difficulty and
+        course.workload were already AI-scored and loaded for the separate
+        /recommend endpoint's scorer but never surfaced here.
+
     WHY extra_codes exists (bug fix):
         search_by_message() only does generic semantic search over the raw
         message text — it has no idea a matched program (see
@@ -284,7 +309,9 @@ def _build_course_context(message: str, extra_codes: set[str] | None = None) -> 
             f"  Description: {description}\n"
             f"  Prerequisites: {prereqs}\n"
             f"  Breadth: {breadth}\n"
-            f"  Terms offered: {terms}"
+            f"  Terms offered: {terms}\n"
+            f"  Difficulty: {course.difficulty}/10, Workload: {course.workload}/10 "
+            f"(AI-estimated; 1 = easiest/lightest, 10 = hardest/heaviest)"
         )
     return "\n".join(lines)
 

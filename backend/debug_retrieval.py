@@ -6,6 +6,8 @@ QUERIES = [
     "ethics",
     "linear algebra",
     "shakespeare",
+    "easy breadth 2",
+    "challenging breadth 4 courses",
 ]
 
 for query in QUERIES:

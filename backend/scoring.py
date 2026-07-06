@@ -839,6 +839,147 @@ def _strip_year_phrases(text: str) -> str:
     return re.sub(r"\s+", " ", result).strip()
 
 
+# ── Breadth-category detection and filtering ─────────────────────────────────
+# UofT's Faculty of Arts & Science defines 5 breadth categories that every
+# course is tagged with in the scraped data as a raw string ending in "(N)"
+# (e.g. "Thought, Belief and Behaviour (2)"). Unlike year level, a query can
+# legitimately name MULTIPLE categories at once ("breadth 2 and 4"), so
+# detection below returns a set, not a single int like _detect_year_level does.
+BREADTH_CATEGORIES: dict[int, str] = {
+    1: "Creative and Cultural Representations",
+    2: "Thought, Belief and Behaviour",
+    3: "Society and its Institutions",
+    4: "Living Things and Their Environment",
+    5: "The Physical and Mathematical Universes",
+}
+
+# Matches "breadth", "breadth category", "breadth categories", "breadth
+# requirement(s)" — the digit(s) themselves are pulled out separately by
+# _BREADTH_NUMBER_RE from a small window AFTER this keyword match, not from
+# the whole message (see _detect_breadth_categories).
+_BREADTH_KEYWORD_RE = re.compile(
+    r"\bbreadth(?:[\s\-]?(?:category|categories|requirement|requirements))?\b",
+    re.IGNORECASE,
+)
+_BREADTH_NUMBER_RE = re.compile(r"\b([1-5])\b")
+_BREADTH_TRAILING_NUM_RE = re.compile(r"\((\d)\)\s*$")
+
+
+def _detect_breadth_categories(text: str) -> set[int] | None:
+    """
+    Scan text for breadth-category phrases ("breadth 2", "breadth category 4",
+    "breadth requirement 2 and 4") and return the set of category numbers
+    named, or None if no breadth phrase is found.
+
+    WHY a set instead of a single int (unlike _detect_year_level):
+        A student can ask about two breadth requirements they still need to
+        satisfy in one query ("easy breadth 2 and 4 courses"). Year level is
+        near-always singular in practice; breadth is not, so the return type
+        has to support 2+ values from the start rather than being retrofitted.
+
+    WHY search from the keyword match onward, not the whole message:
+        Extracting digits from the entire message would false-positive on
+        unrelated numbers ("I've done 4 courses so far, need breadth 2").
+        Anchoring the number search to text after the breadth keyword keeps
+        detection scoped to what's actually being asked about breadth.
+    """
+    match = _BREADTH_KEYWORD_RE.search(text)
+    if not match:
+        return None
+    tail = text[match.end():match.end() + 40]  # numbers stated right after the keyword, not anywhere in the message
+    numbers = {int(n) for n in _BREADTH_NUMBER_RE.findall(tail)}
+    return numbers or None
+
+
+def _get_breadth_numbers(course: "Course") -> set[int]:
+    """
+    Parse the trailing "(N)" category number off each raw breadth string.
+
+    WHY parse per-call instead of caching on Course at load time:
+        Some scraped values are placeholders ("None", "TBA") with no trailing
+        digit. The regex simply yields nothing for those, so no special-casing
+        is needed here — a course with only placeholder breadth values
+        correctly produces an empty set and is excluded by any breadth filter.
+    """
+    numbers: set[int] = set()
+    for raw in course.get_breadth():
+        m = _BREADTH_TRAILING_NUM_RE.search(raw)
+        if m:
+            numbers.add(int(m.group(1)))
+    return numbers
+
+
+def _filter_by_breadth(course_list: list["Course"], categories: set[int]) -> list["Course"]:
+    """
+    Return only courses tagged with AT LEAST ONE of the requested breadth
+    categories.
+
+    WHY "any of" (OR) rather than "all of" (AND):
+        A single course in this dataset is tagged with at most one breadth
+        requirement, so requiring a course match ALL requested categories
+        would return zero results whenever 2+ categories are named — exactly
+        the "breadth 2 and 4" query this feature exists to answer. OR composes
+        correctly: "breadth 2 and 4 courses" means "show me options for
+        breadth 2 OR breadth 4", not "a single course tagged both".
+    """
+    return [c for c in course_list if _get_breadth_numbers(c) & categories]
+
+
+def _strip_breadth_phrases(text: str) -> str:
+    """
+    Remove the breadth keyword phrase from an already stop-word-stripped
+    query, mirroring _strip_year_phrases's reasoning: leaving "breadth" in the
+    query would pull the embedding toward courses whose *description* happens
+    to mention "breadth" rather than courses *tagged* with the requested
+    category — the mask (see search_by_message) already guarantees the
+    latter, so the word is redundant/noisy text for the embedding.
+
+    WHY this only strips the keyword, not the trailing digit(s) (unlike year,
+    which strips the whole phrase including the number):
+        Bare digits 1-5 are far more collision-prone to regex-strip safely
+        than a year phrase like "first year" — stray connector words ("and",
+        ",") around them make a clean removal fragile. A lone leftover "2 4"
+        token is low-signal noise for a 384-dim sentence embedding and not
+        worth a brittle regex; this is a deliberate simplification, not an
+        oversight.
+    """
+    return re.sub(r"\s+", " ", _BREADTH_KEYWORD_RE.sub("", text)).strip()
+
+
+# ── Difficulty ("easy"/"hard") signal detection ──────────────────────────────
+# course.difficulty is an AI-scored 1-10 int already loaded (see the Course
+# construction loop above) but never consulted anywhere in the chat retrieval
+# path — only in the separate /recommend scorer (score_course()). This wires
+# the same field into search_by_message() so "easy breadth 2 courses" queries
+# can actually bias toward low-difficulty results instead of silently ignoring
+# the word "easy".
+_EASY_RE = re.compile(
+    r"\b(easy|easier|easiest|simple|beginner[\s\-]?friendly|low[\s\-]?difficulty|not[\s\-]?too[\s\-]?hard)\b",
+    re.IGNORECASE,
+)
+_HARD_RE = re.compile(
+    r"\b(hard|harder|hardest|difficult|challenging|advanced|rigorous|high[\s\-]?difficulty)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_difficulty_bias(text: str) -> str | None:
+    """
+    Detect whether the student wants easier or harder courses.
+
+    Returns "easy", "hard", or None (no signal). Checked in that order — if a
+    message contains both keyword families (rare, e.g. "not too hard but
+    still a bit challenging"), "easy" wins, mirroring _detect_year_level's
+    deterministic first-match-wins policy rather than modelling contradictory
+    intent.
+    """
+    if _EASY_RE.search(text):
+        return "easy"
+    if _HARD_RE.search(text):
+        return "hard"
+    return None
+
+
 def _find_courses_by_code(message: str, course_list: list["Course"]) -> list[tuple["Course", float]]:
     """
     Direct course-code lookup before any interest scoring runs.
@@ -951,32 +1092,50 @@ def search_by_message(message: str, course_list: list["Course"], top_n: int = 5)
     """
     Find the most relevant courses for a free-text message.
 
-    Six-step pipeline:
+    Pipeline:
       1. Exact course-code detection — pins matched courses at score 10.0.
          Always wins over semantic; handles "tell me about CSC108H1" queries.
-      2. Year-level detection — scans the raw message for phrases like "first
+      2a. Year-level detection — scans the raw message for phrases like "first
          year", "introductory", "2nd year". When found, the candidate pool is
          restricted to courses whose code digit matches that year.
+      2b. Breadth-category detection — scans the raw message for phrases like
+         "breadth 2", "breadth category 4", "breadth requirement 2 and 4".
+         When found, the candidate pool is restricted to courses tagged with
+         at least one of the named categories. Combines with the year filter
+         by intersection (a query can name both), while multiple breadth
+         numbers within one query combine by union (see _filter_by_breadth).
       3. Stop-word stripping — removes conversational filler so the embedding
          query reflects topic intent, not phrasing style.
-      4. Year-phrase stripping — removes the now-consumed year signal from the
+      4a. Year-phrase stripping — removes the now-consumed year signal from the
          query string. Without this step, "first year" would remain and pull the
          embedding toward courses that *mention* "first year" in their text
          (e.g. CSC099Y1 "First-Year Learning Community") rather than courses
          *coded at* year 1 (CSC1xx).
+      4b. Breadth-phrase stripping — same reasoning as 4a, for the word
+         "breadth" (see _strip_breadth_phrases).
       5. Query expansion — broadens sparse terms to include canonical synonyms
          (e.g. "coding" → "coding programming") so vocabulary mismatches between
          student language and course catalog language are bridged.
-      6. Semantic search with year mask — cosine similarity over the embedding
-         index, optionally restricted to the year-filtered candidate pool via
-         a numpy boolean mask.
+      6. Semantic search with year/breadth mask, optionally re-ranked by a
+         detected difficulty ("easy"/"hard") bias — cosine similarity over the
+         embedding index, restricted to the filtered candidate pool via a
+         numpy boolean mask, then re-sorted by a similarity/difficulty blend
+         when the student asked for easier or harder courses.
 
-    WHY year filtering happens before embedding (not after):
+    WHY year/breadth filtering happens before embedding (not after):
         The embedding index has N≈3206 rows. Without pre-filtering, the top-N
-        selection could be dominated by courses from the wrong year that happen
-        to have high semantic similarity. With the mask, argsort only considers
-        year-matched rows so the final top_n results are guaranteed to come from
-        the correct year pool — no silent under-delivery.
+        selection could be dominated by courses from the wrong year/category
+        that happen to have high semantic similarity. With the mask, argsort
+        only considers matching rows so the final top_n results are
+        guaranteed to come from the correct pool — no silent under-delivery.
+
+    WHY difficulty is a re-rank, not a third mask:
+        Stacking a hard difficulty-range filter on top of an already-narrow
+        breadth mask risks zero results (e.g. no breadth-2 course happens to
+        be "very easy"). Re-ranking a slightly larger candidate pool instead
+        guarantees the response always contains the best available options
+        for the requested category, just ordered toward the requested
+        difficulty rather than filtered by it.
 
     WHY _extract_interests_from_text() and INTEREST_SYNONYMS are not used here:
         Those were designed for the /recommend flow where the student explicitly
@@ -994,41 +1153,98 @@ def search_by_message(message: str, course_list: list["Course"], top_n: int = 5)
     semantic_hits: list[tuple["Course", float]] = []
 
     if remaining > 0:
-        # Step 2: year detection — must run on the raw message before any
-        # stripping, so the year phrase is still present to match against.
+        # Step 2a/2b: year + breadth detection — both must run on the raw
+        # message before any stripping, so their trigger phrases are still
+        # present to match against.
         year = _detect_year_level(message)
+        breadth_categories = _detect_breadth_categories(message)
 
-        # Build the allowed_codes set for the embedding mask.
-        # None means "no mask" — score all rows — when no year was detected.
-        allowed_codes: set[str] | None = (
-            {c.get_course_code() for c in _filter_by_year(course_list, year)}
-            if year is not None else None
-        )
+        # Build the allowed_codes mask by intersecting every active filter
+        # type. None means "no mask" — score all rows.
+        #
+        # WHY intersection (AND) across filter types but union (OR) within
+        # breadth categories: a query naming both a year AND a breadth
+        # category ("second year breadth 2 courses") should match courses
+        # satisfying BOTH constraints, but a query naming two breadth
+        # categories ("breadth 2 and 4") should match courses satisfying
+        # EITHER one (see _filter_by_breadth docstring) — different asks, so
+        # it's OR inside one filter type and AND across filter types.
+        allowed_codes: set[str] | None = None
+        if year is not None:
+            allowed_codes = {c.get_course_code() for c in _filter_by_year(course_list, year)}
+        if breadth_categories is not None:
+            breadth_codes = {c.get_course_code() for c in _filter_by_breadth(course_list, breadth_categories)}
+            allowed_codes = breadth_codes if allowed_codes is None else allowed_codes & breadth_codes
 
         # Step 3: strip conversational filler
         semantic_query = _strip_filler(message)
 
-        # Step 4: strip the year phrase that was already captured as a filter.
+        # Step 4a: strip the year phrase that was already captured as a filter.
         # Leaving it in would attract courses that *mention* "first year" rather
         # than courses *at* year 1, which the mask already guarantees.
         if year is not None:
             semantic_query = _strip_year_phrases(semantic_query)
 
+        # Step 4b: strip the breadth keyword that was already captured as a
+        # filter, for the same reason as 4a.
+        if breadth_categories is not None:
+            semantic_query = _strip_breadth_phrases(semantic_query)
+
         # Step 5: expand shorthand terms to include canonical synonyms
         semantic_query = _expand_query(semantic_query)
 
-        # Step 6: semantic search with optional year mask
+        # Step 6: semantic search with optional year/breadth mask, then
+        # optional difficulty re-ranking.
+        difficulty_bias = _detect_difficulty_bias(message)
+
+        # WHY request a larger pool (3x) when a difficulty bias is active:
+        #     Difficulty re-ranking needs candidates to actually have room to
+        #     reorder — if we only ever fetched `remaining` results there'd be
+        #     nothing left to re-sort and semantic order would just pass
+        #     through unchanged. Overfetching then truncating AFTER the
+        #     blended sort keeps the final list still topically relevant (not
+        #     just "the easiest courses in the catalog regardless of topic")
+        #     while giving difficulty a real say in the final order.
+        fetch_n = (remaining * 3 if difficulty_bias else remaining) + len(code_hits)
+
         # O(1) code → Course lookup to resolve codes returned by semantic_search()
         code_to_course = {c.get_course_code(): c for c in course_list}
-        # Request more than top_n to have enough candidates after excluding code_hits
+        candidates: list[tuple["Course", float]] = []
         for code, score in semantic_search(
             semantic_query,
-            top_n=top_n + len(code_hits),
+            top_n=fetch_n,
             allowed_codes=allowed_codes,
         ):
             if code not in code_hit_codes and code in code_to_course:
-                semantic_hits.append((code_to_course[code], score))
-                if len(semantic_hits) >= remaining:
-                    break
+                candidates.append((code_to_course[code], score))
+
+        if difficulty_bias is not None:
+            # Blend: semantic similarity stays dominant (weight 0.7) so a
+            # highly relevant but medium-difficulty course still beats a
+            # barely-relevant trivial one. Difficulty contributes 0.3,
+            # normalized to a 0-1 range so it's on comparable footing with
+            # cosine similarity.
+            #
+            # WHY a blend and not a pure difficulty sort:
+            #     A pure difficulty sort would ignore topic relevance
+            #     entirely — "easy breadth 2 courses" would return the single
+            #     easiest course in the WHOLE catalog if it happened to be
+            #     tagged breadth 2, even if three other breadth-2 courses
+            #     were a much better topical fit and only slightly harder.
+            #     The mask already restricts the pool to breadth 2; this
+            #     blend just orders WITHIN that pool.
+            def _blended(entry: tuple["Course", float]) -> float:
+                course, sim = entry
+                norm_difficulty = (course.difficulty - DIFFICULTY_MIN) / (DIFFICULTY_MAX - DIFFICULTY_MIN)  # 0=easiest, 1=hardest
+                difficulty_component = (1 - norm_difficulty) if difficulty_bias == "easy" else norm_difficulty
+                return 0.7 * sim + 0.3 * difficulty_component
+
+            candidates.sort(key=_blended, reverse=True)
+
+        # score stays the raw cosine similarity here (not the blended value)
+        # since callers (e.g. _build_course_context) don't currently surface
+        # score at all — the blend is only used to decide ORDER, not to
+        # replace the similarity value in the returned tuple.
+        semantic_hits = candidates[:remaining]
 
     return code_hits + semantic_hits
