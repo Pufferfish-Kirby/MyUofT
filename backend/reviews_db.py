@@ -1,14 +1,11 @@
-# WHY share the same myuoft.db file as chat history:
-#   A single SQLite file is simpler to back up, ship, and reason about than
-#   multiple DB files for a local MVP.  One file = one copy command, one git
-#   ignore entry, one restore step.  When we migrate to PostgreSQL in Phase 2,
-#   both tables move together in the same migration.
+# Reviews live in the same myuoft.db file as chat history — one SQLite file is
+# simpler to back up and ship than several, and both tables migrate together
+# when we move to PostgreSQL in Phase 2.
 import sqlite3
 
-# WHY import DB_PATH from chat_db instead of recomputing it here:
-#   Both modules need to agree on where the DB file lives, including the
-#   Railway-volume-aware fallback logic in chat_db.py. Duplicating that
-#   resolution here risked the two paths silently drifting apart.
+# Import DB_PATH from chat_db rather than recomputing it, so both modules always
+# agree on the file location (including chat_db's Railway-volume fallback) and
+# can't silently drift apart.
 from chat_db import DB_PATH as _DB_PATH
 
 
@@ -47,10 +44,9 @@ def save_review(course_code: str, rating: int, review_text: str) -> dict:
     """
     Insert a new review row and return it as a dict.
 
-    WHY use lastrowid + a second SELECT instead of RETURNING:
-        The RETURNING clause requires SQLite 3.35+ (2021).  Using lastrowid is
-        compatible with older SQLite versions that ship with Python 3.9–3.10 on
-        some systems, while also being simpler to read.
+    Reads the row back via lastrowid + a SELECT instead of a RETURNING clause,
+    which only works on SQLite 3.35+ — lastrowid runs on the older versions that
+    ship with some Python builds.
     """
     conn = _connect()
     cursor = conn.execute(
@@ -69,9 +65,8 @@ def get_reviews(course_code: str) -> list[dict]:
     """
     Return all reviews for a course, newest first.
 
-    WHY ORDER BY created_at DESC:
-        The most recent opinions are most relevant to current students — a 2024
-        review of a restructured course matters more than a 2019 review.
+    Orders newest-first because recent opinions matter most to current students —
+    a review of a recently restructured course beats a years-old one.
     """
     conn = _connect()
     rows = conn.execute(
@@ -86,10 +81,9 @@ def get_avg_rating(course_code: str) -> float | None:
     """
     Return the average rating for a course, or None if no reviews exist yet.
 
-    Returns None (not 0.0) so callers can distinguish "no data" from
-    "data exists and the average happens to be zero" — the scoring engine
-    uses None as a signal to apply the RATING_NEUTRAL fallback instead of
-    treating the course as having a real 0-star rating.
+    Returns None rather than 0.0 so callers can tell "no data" apart from a real
+    zero average — the scoring engine treats None as its signal to fall back to
+    RATING_NEUTRAL.
     """
     conn = _connect()
     row = conn.execute(
@@ -101,8 +95,7 @@ def get_avg_rating(course_code: str) -> float | None:
     return float(avg) if avg is not None else None
 
 
-# WHY run at import time: scoring.py loads the full course catalog at module
-# import and calls get_avg_rating() for every course.  main.py cannot call
-# init_reviews_db() before importing scoring, so the table must exist as soon
-# as this module is loaded — same idempotent CREATE TABLE IF NOT EXISTS pattern.
+# Runs at import time because scoring.py calls get_avg_rating() while loading the
+# catalog on import, before main.py could call this itself — so the table has to
+# exist the moment this module loads. Safe to run eagerly since it's idempotent.
 init_reviews_db()

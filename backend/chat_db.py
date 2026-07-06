@@ -1,11 +1,8 @@
 """
 chat_db.py — thin SQLite helper for persisting chat sessions and messages.
 
-WHY sqlite3 instead of SQLAlchemy:
-    SQLAlchemy is powerful but brings ORM overhead (session lifecycle, model
-    declaration, migrations) that we simply don't need for two tiny tables.
-    The stdlib sqlite3 module is zero-dependency, perfectly sufficient for a
-    local MVP, and keeps this module readable at a glance.
+Uses the stdlib sqlite3 module directly instead of SQLAlchemy — two tiny tables
+don't need an ORM's overhead, and this stays zero-dependency for the local MVP.
 """
 
 import os
@@ -13,17 +10,11 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-# Resolve the DB path relative to THIS file so it works regardless of where
-# uvicorn is invoked from (e.g., `cd backend && uvicorn main:app` vs running
-# from the repo root).
-#
-# WHY check RAILWAY_VOLUME_MOUNT_PATH: Railway's filesystem is ephemeral by
-# default — anything written next to this source file is wiped on every
-# redeploy/restart. If a Railway Volume is attached to the service, Railway
-# auto-injects this env var pointing at the persistent mount; when present, we
-# store the DB there instead so chat history and reviews survive redeploys.
-# Locally, and on Railway if no volume is attached, the env var is unset and
-# this falls back to the exact same path as before — zero behavior change.
+# Resolve the DB path relative to this file so it works no matter where uvicorn
+# is launched from. If a Railway Volume is attached, Railway sets this env var to
+# a persistent mount — we store the DB there so it survives redeploys, since
+# Railway's default filesystem is wiped on every restart. Unset locally, so it
+# falls back to sitting next to this file.
 DB_DIR = Path(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", Path(__file__).parent))
 DB_PATH = DB_DIR / "myuoft.db"
 
@@ -32,17 +23,15 @@ def _get_conn() -> sqlite3.Connection:
     """
     Open a fresh connection for each call.
 
-    WHY not a module-level connection:
-        sqlite3 connections are not thread-safe by default.  FastAPI runs
-        async handlers in a thread pool, so sharing one connection across
-        requests risks data corruption.  Opening per-call is slightly slower
-        but safe without needing connection-pool machinery.
+    A new connection per call instead of one shared module-level one, because
+    sqlite3 connections aren't thread-safe and FastAPI runs handlers in a thread
+    pool — sharing one would risk corruption.
     """
     conn = sqlite3.connect(DB_PATH)
     # Return rows as dicts so callers can do row["id"] instead of row[0].
     conn.row_factory = sqlite3.Row
-    # ON DELETE CASCADE requires foreign-key enforcement to be turned on
-    # explicitly in SQLite — it is off by default for backwards compat.
+    # SQLite leaves foreign-key enforcement off by default, so turn it on here
+    # for our ON DELETE CASCADE to actually fire.
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -51,9 +40,8 @@ def init_db() -> None:
     """
     Create tables if they don't exist.
 
-    WHY CREATE TABLE IF NOT EXISTS:
-        This makes init_db() idempotent — safe to call on every app startup
-        without wiping existing data or raising errors on a fresh database.
+    Uses CREATE TABLE IF NOT EXISTS so this is idempotent — safe to run on every
+    startup without wiping data or erroring on an already-created database.
     """
     conn = _get_conn()
     try:
@@ -76,11 +64,9 @@ def init_db() -> None:
         """)
         conn.commit()
 
-        # WHY a manual migration step here: CREATE TABLE IF NOT EXISTS is a
-        # no-op against a chat_sessions table that already existed before this
-        # column was added (e.g. the table Railway's volume created on first
-        # deploy), so new installs get owner_id for free but existing ones
-        # need it bolted on explicitly.
+        # Manually add owner_id to tables that predate this column. CREATE TABLE
+        # IF NOT EXISTS skips existing tables entirely, so fresh installs get the
+        # column for free but older databases need it patched on here.
         existing_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(chat_sessions)")
         }
@@ -118,10 +104,8 @@ def list_sessions(owner_id: str) -> list[dict]:
     """
     Return owner_id's sessions newest-first, each with a message_count field.
 
-    WHY include message_count in the list query:
-        The sidebar needs to show something useful about each session without
-        a second round-trip per row.  A single LEFT JOIN is cheaper than N+1
-        calls to get_messages() for each session.
+    Gets the count via a single LEFT JOIN rather than a follow-up query per
+    session, so the sidebar can show counts without N+1 round-trips.
     """
     conn = _get_conn()
     try:
@@ -146,11 +130,9 @@ def session_belongs_to(session_id: int, owner_id: str) -> bool:
     """
     Check whether a session exists and is owned by owner_id.
 
-    WHY this exists: endpoints that take a session_id (loading messages,
-    posting/editing chat messages) must not trust the caller's claim to own
-    that id — anyone can guess or increment an integer id. Callers check this
-    once up front and 404 on a mismatch, rather than every helper below
-    threading owner_id through and silently no-op'ing on a mismatch.
+    Session ids are guessable integers, so any endpoint taking one must verify
+    ownership rather than trust the caller. Callers check this once up front and
+    404 on a mismatch, keeping the ownership guard in one place.
     """
     conn = _get_conn()
     try:
@@ -168,10 +150,9 @@ def get_messages(session_id: int) -> list[dict]:
     Return all messages for a session in chronological order.
 
     Returns: [{ id, role, content }, ...]
-    WHY id is included: the frontend needs a stable identifier per message to
-    support editing — when a user edits a past message, we have to tell the
-    DB exactly which row (and everything after it) to discard. Array index
-    isn't reliable for that once messages have been through DB storage/reload.
+    Includes id because editing a past message needs a stable per-message handle
+    to tell the DB which row (and everything after it) to discard — array index
+    isn't reliable once messages have been stored and reloaded.
     """
     conn = _get_conn()
     try:
@@ -202,17 +183,10 @@ def delete_messages_from(session_id: int, message_id: int) -> None:
     """
     Delete a message and every message after it (by id) within one session.
 
-    WHY this exists: editing a past message means the conversation branches —
-    the old reply (and anything the user sent after it) no longer applies to
-    the corrected message. Rather than support multiple branches (real
-    complexity for no payoff in a single-user local MVP), we just discard the
-    old tail and let the edited message start a fresh one, matching how
-    ChatGPT-style "edit and resend" works.
-
-    WHY id >= message_id, not created_at: CURRENT_TIMESTAMP has whole-second
-    resolution, so a user message and its assistant reply (saved a moment
-    apart) can tie on created_at. The autoincrement id has no such collision
-    and is strictly ordered, so it's the only reliable "from here on" cutoff.
+    Editing a past message discards the now-stale tail so the edit starts fresh,
+    like ChatGPT's "edit and resend" — simpler than supporting real branches.
+    Cuts on id, not created_at, because whole-second timestamps can tie between a
+    message and its reply, while the autoincrement id is strictly ordered.
     """
     conn = _get_conn()
     try:
@@ -229,11 +203,9 @@ def update_session_title(session_id: int, title: str) -> None:
     """
     Overwrite a session's title.
 
-    WHY this exists:
-        When a session is created we don't know the topic yet, so it starts as
-        "New Chat".  After the first user message arrives we call this to set
-        the title to a truncated snippet of that message — giving the sidebar
-        meaningful labels without a separate naming step.
+    Sessions start as "New Chat" since the topic is unknown at creation; once the
+    first user message arrives we set the title to a snippet of it, giving the
+    sidebar meaningful labels without asking the user to name anything.
     """
     conn = _get_conn()
     try:

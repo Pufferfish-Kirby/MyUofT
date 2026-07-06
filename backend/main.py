@@ -106,10 +106,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Single source of truth for the breadth category names shown to Claude —
-# built from the same BREADTH_CATEGORIES dict that scoring.py filters
-# against, so the reference table can never drift out of sync with the
-# actual filtering logic.
+# Builds the breadth category list Claude sees from the same dict scoring.py
+# filters against, so the two can never drift apart — one source of truth
+# instead of hardcoding the category names twice.
 _BREADTH_REFERENCE = "\n".join(f"  {n}. {name}" for n, name in sorted(BREADTH_CATEGORIES.items()))
 
 # The advisor system prompt is injected on every request rather than stored
@@ -233,44 +232,27 @@ def _truncate_description(text: str, limit: int = _DESCRIPTION_CHAR_BUDGET) -> s
 
 def _build_course_context(message: str, extra_codes: set[str] | None = None) -> str:
     """
-    Search the course catalog for courses relevant to the user's message and
-    format them as a context block to append to the system prompt.
+    Searches the course catalog for courses relevant to the user's message
+    and formats them into a context block appended to the system prompt.
 
-    WHY inject here rather than in the system prompt at startup:
-        Sending the full 3000+ course catalog to Claude on every request is
-        expensive and wastes most of the context window. By filtering to only
-        the top few relevant courses per message, we keep the prompt tight while
-        still grounding Claude's answers in real UofT course data.
+    Injected per-message instead of at startup, since sending the full
+    3000+ course catalog on every request would waste most of the context
+    window — filtering to just the top few keeps the prompt small but grounded.
 
-    WHY each course now includes description, breadth and terms (not just
-    code+name+prereqs):
-        The advisor is only allowed to make specific UofT claims from this
-        context (see ADVISOR_SYSTEM_PROMPT). A bare code+name doesn't tell Claude
-        what a course actually covers, so it couldn't confidently place a course
-        in a learning path or explain why it fits. Feeding a (truncated)
-        description, the breadth category, and the terms it runs in lets Claude
-        reason about fit and sequencing without inventing anything.
+    Each course includes its description, breadth, and terms (not just code
+    and name), since the advisor can only make claims from this context — a
+    bare code+name wouldn't give Claude enough to explain why a course fits.
 
-    WHY difficulty/workload are now included:
-        Before this, a query like "what are easy breadth courses" gave Claude
-        zero grounded numeric data to support an "easy" claim with — it had to
-        guess, producing vague or empty-feeling answers. course.difficulty and
-        course.workload were already AI-scored and loaded for the separate
-        /recommend endpoint's scorer but never surfaced here.
+    Difficulty and workload are included too, since without them a query
+    like "what are easy courses" gave Claude no real data to answer from and
+    it had to guess.
 
-    WHY extra_codes exists (bug fix):
-        search_by_message() only does generic semantic search over the raw
-        message text — it has no idea a matched program (see
-        _build_program_context) just referenced specific course codes like
-        "CSC236H1 OR CSC240H1". Semantic hits can easily pick one half of an
-        OR-pair (CSC240H1) and miss the other (CSC236H1), so Claude ends up
-        saying "CSC236H1 (not detailed in my info)" even though the course
-        exists in the catalog with full prerequisite text. extra_codes lets
-        the caller pass in codes that MUST be exact-looked-up and included,
-        regardless of what semantic search alone would have surfaced.
+    extra_codes exists because semantic search alone can miss half of an
+    OR-pair prerequisite (like "CSC236H1 OR CSC240H1") that a matched program
+    mentions — it lets the caller force specific codes into context regardless of score.
 
-    Returns an empty string if no relevant courses are found so the system
-    prompt stays clean when the message isn't course-related.
+    Returns an empty string when nothing's relevant, so the system prompt
+    stays clean for messages that aren't about courses.
     """
     relevant = search_by_message(message, course_catalog, top_n=_COURSE_CONTEXT_TOP_N)
     seen_codes = {course.get_course_code() for course, _ in relevant}

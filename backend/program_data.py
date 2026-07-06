@@ -6,10 +6,9 @@ Mirrors the role scoring.py plays for courses. Provides:
   - load_programs() to read programs.json
   - search_programs_by_message() for semantic retrieval
 
-WHY not import from scoring.py:
-    Importing scoring.py triggers a full course catalog load and database
-    queries at module level. build_program_embeddings.py imports this module
-    and should not pay that cost.
+Kept separate from scoring.py so importing it doesn't trigger scoring.py's
+full course-catalog load and database queries — build_program_embeddings.py
+imports this module and shouldn't pay that cost.
 """
 
 from __future__ import annotations
@@ -47,11 +46,9 @@ _PROGRAM_STOP_WORDS: frozenset[str] = frozenset({
     "available", "university", "toronto", "uoft",
 })
 
-# Check type keywords in this priority order.
-# WHY "specialist" before "major": "Computer Science Specialist Major" edge case.
-# WHY "minor" before "major": "minor" is unambiguous; "major" is also an English adjective.
-# WHY "major" last: "major requirements" is a common phrase meaning "main requirements",
-#   not necessarily a request for Major-type programs.
+# Match type keywords in this order, most specific first. "major" comes last
+# because it's the most ambiguous — "major requirements" often just means "main
+# requirements", and titles like "Specialist Major" would match it too early.
 _PROGRAM_TYPE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bspecialist\b", re.IGNORECASE), "Specialist"),
     (re.compile(r"\bminor\b", re.IGNORECASE), "Minor"),
@@ -126,10 +123,9 @@ def _format_year_section(section: dict) -> str:
     return "\n".join(lines)
 
 
-# Maps a detected year level (1-4) to the completion_requirements JSON key
-# that holds that year's specific section. Year 3 and 4 have no entry here on
-# purpose — see _course_codes_for_year's docstring for why they fall back to
-# "upper_years" instead of a dedicated key.
+# Maps a year level to its completion_requirements JSON key. Years 3 and 4 are
+# intentionally absent — they fall back to "upper_years" (see
+# _course_codes_for_year), since programs usually lump 3rd/4th year together.
 _YEAR_SECTION_KEYS: dict[int, str] = {
     1: "first_year",
     2: "second_year",
@@ -138,37 +134,16 @@ _YEAR_SECTION_KEYS: dict[int, str] = {
 
 def _course_codes_for_year(comp: dict, year: int) -> list[str]:
     """
-    Extract course codes referenced in the completion-requirements section for
-    a SINGLE year (1-4) only, instead of the whole program.
+    Pull course codes from just one year's completion-requirements section,
+    rather than the whole program. Scoping it this way keeps a "what's my
+    second year?" question from getting first/third/fourth year codes dumped
+    into the prompt too (Program.course_codes covers the entire program).
 
-    WHY not just reuse Program.course_codes (or formatted_requirements) here:
-        Program.course_codes is built by regexing the ENTIRE program JSON
-        record (name, notes, every year, everything) — for the CS Specialist
-        that's 73 codes; the median across all 169 programs is 59, the max is
-        447. Even narrowing to just formatted_requirements (which already
-        concatenates first_year + second_year + third_year + fourth_year +
-        upper_years unconditionally) still yields 66 codes for CS Specialist,
-        because that function renders the whole 4-year program at once. A
-        student asking about second year does not need first/third/fourth
-        year codes injected into the prompt — that defeats the point of
-        scoping this fix to "the year the student actually asked about."
-        Regexing just the one matching JSON section keeps the exact-lookup
-        expansion small and proportional to the question.
-
-    WHY fall back to "upper_years" only for year 3/4, never for 1/2:
-        Many specialist programs (CS included) explicitly split out
-        first_year and second_year, but lump 3rd + 4th year requirements
-        together under a single "upper_years" section (often Group A/B/C
-        course pools that aren't tied to one specific year). So for years 3
-        and 4, checking "upper_years" when the year-specific key is absent
-        recovers real data instead of silently returning nothing. For years
-        1/2, a missing key means the program genuinely has no first/second
-        year requirements worth surfacing — falling back to upper_years there
-        would incorrectly attribute 3rd/4th year courses to a 1st/2nd year
-        question, so we deliberately do NOT fall back in that case.
-
-    Returns an empty list (never the full course_codes set) when no matching
-    section exists at all, per the "don't defeat the point of this fix" rule.
+    Years 3 and 4 fall back to "upper_years" when they have no dedicated key,
+    since programs usually lump those two years together there. Years 1 and 2
+    never fall back — a missing key means no such requirements, and falling
+    back would wrongly pin upper-year courses onto a first/second year question.
+    Returns an empty list when nothing matches.
     """
     key = _YEAR_SECTION_KEYS.get(year)
     section = comp.get(key) if key else None
@@ -182,13 +157,10 @@ def _course_codes_for_year(comp: dict, year: int) -> list[str]:
 
 def _format_completion_requirements(comp: dict) -> str:
     """
-    Render ALL fields in completion_requirements into a human-readable string
-    so Claude can answer any program-related question from first principles.
-
-    WHY include engineering_courses / transfer_credits / combining:
-        Each answers a distinct student question ("can I take eng courses?",
-        "how many transfer credits count?", "can I combine this with X?").
-        Omitting any field silently breaks those answers.
+    Render every field in completion_requirements into readable text so Claude
+    can answer any program question from it. The admin fields (engineering
+    courses, transfer credits, combining) are each included because each maps
+    to a real student question, so dropping one silently breaks that answer.
     """
     parts = []
 
@@ -243,12 +215,10 @@ class Program:
     formatted_requirements: str  # output of _format_completion_requirements()
     course_codes: list[str]      # all UofT course codes extracted via regex
     asip: str | None
-    # Course codes scoped to a single year section (1-4), e.g.
-    # year_course_codes[2] == CS Specialist's second-year codes only.
-    # Populated by _course_codes_for_year at load time — see that function's
-    # docstring for why this exists instead of just using course_codes.
-    # Missing years (no requirements found, even after the upper_years
-    # fallback) simply aren't present as keys.
+    # Course codes scoped to a single year, e.g. year_course_codes[2] is the
+    # second-year codes only. Filled by _course_codes_for_year at load time so
+    # a single-year question doesn't pull in the whole program's codes. Years
+    # with no requirements found simply aren't present as keys.
     year_course_codes: dict[int, list[str]] = field(default_factory=dict)
 
     def get_program_code(self) -> str:
@@ -260,12 +230,10 @@ class Program:
 
     def to_text(self) -> str:
         """
-        Produce a flat string for embedding. Used ONLY for building the vector
-        index — Claude never sees this. Claude sees formatted_requirements instead.
-
-        WHY name + type come first: the model truncates from the right at the
-        256-token limit, so identity fields must appear before course codes.
-        WHY cap at 800 chars: keeps total well within the model's effective range.
+        Produce a flat string for embedding only — Claude never sees this, it
+        sees formatted_requirements. Name and type come first because the model
+        truncates from the right at its token limit, so identity has to precede
+        course codes; the 800-char cap keeps us within its effective range.
         """
         parts = [self.name, self.type]
         if self.completion_summary:
@@ -283,13 +251,10 @@ class Program:
 
 def load_programs() -> list[Program]:
     """
-    Load all programs from programs.json and return Program objects.
-
-    WHY use json.dumps(p) for code extraction:
-        The completion_requirements structure has 10+ possible keys with
-        variable nesting depth. Traversing all paths manually is fragile.
-        A regex over the full JSON text extracts all course codes in one pass
-        and is resilient to schema variations between programs.
+    Load all programs from programs.json into Program objects. Course codes are
+    pulled by regexing json.dumps(p) — the whole record as text — rather than
+    walking the structure, since completion_requirements has 10+ keys at varying
+    depths and a text regex catches them all in one pass regardless of shape.
     """
     with open(_PROGRAMS_FILE, encoding="utf-8") as f:
         data = json.load(f)
@@ -304,9 +269,9 @@ def load_programs() -> list[Program]:
         all_text = json.dumps(p)
         codes = sorted(set(m.group(1) for m in _COURSE_CODE_RE.finditer(all_text)))
 
-        # Pre-compute per-year course codes once at load time (not on every
-        # request) since programs.json only changes on re-scrape, and there
-        # are only 169 programs x 4 years — negligible cost either way.
+        # Pre-compute per-year codes at load time rather than per request,
+        # since programs.json only changes on re-scrape and 169 programs x 4
+        # years is negligible work.
         year_codes = {
             year: yc
             for year in (1, 2, 3, 4)
@@ -342,12 +307,10 @@ def search_programs_by_message(
       2. Stop-word stripping — removes conversational filler before embedding.
       3. Semantic search with optional type mask.
 
-    WHY local import of program_semantic_search:
-        Importing at module level would create a circular dependency risk
-        and also forces embeddings.py to be importable without the index
-        being built. Local import defers this until search time.
+    program_semantic_search is imported locally to avoid a circular-dependency
+    risk and so this module stays importable even before the embeddings index
+    is built — the import is only needed at actual search time.
     """
-    # Avoid import at module level — see WHY above
     from embeddings import program_semantic_search
 
     program_type = _detect_program_type(message)

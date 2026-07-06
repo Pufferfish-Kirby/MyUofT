@@ -1,29 +1,17 @@
 """
 clean_course_html.py — One-time script to strip leftover HTML from course text fields.
 
-WHY this exists:
-    The TTB scraper (data_pulling.py) pulls description/prerequisite/etc. text
-    straight from the calendar's rich-text fields, so tags like <p>, <strong>,
-    and <a href="..."> ride along into courses_slim.json and, from there, into
-    courses_all_enriched.json (the file scoring.py actually loads at runtime).
-    Those tags are meaningless to both students reading a rendered chat bubble
-    and to Claude, which just sees literal "<p>" characters as noise in the
-    system prompt.
+The TTB scraper copies text straight from the calendar's rich-text fields, so
+tags like <p> and <a href="..."> end up in the course JSON. They're just noise
+to students reading a chat bubble and to Claude reading the system prompt.
 
-WHY html.parser instead of a regex or adding BeautifulSoup as a dependency:
-    A regex like re.sub(r'<[^>]+>', '', text) breaks on '<' inside an
-    unclosed/malformed tag or an <a href="..."> where the URL is fine but the
-    surrounding tag isn't a simple "<word>" shape. html.parser is in the
-    standard library, handles malformed markup gracefully, and lets us also
-    unescape entities (&amp; -> &) in the same pass.
+Uses the standard-library html.parser rather than a regex (which breaks on
+malformed or nested tags) or BeautifulSoup (an extra dependency); it also
+unescapes entities like &amp; in the same pass.
 
-WHY both courses_slim.json and courses_all_enriched.json:
-    enrich_all_courses.py reads courses_slim.json and adds AI-generated
-    fields (difficulty, workload, tags) on top of it to produce
-    courses_all_enriched.json — it never modifies the scraped text fields.
-    Re-running the enrichment step just to get clean text would mean paying
-    for ~3200 Claude calls again for no reason, so we patch both files with
-    the same stripping logic instead and keep them in sync.
+Cleans both courses_slim.json and courses_all_enriched.json. The enriched file
+is built on top of the slim one, so patching both keeps them in sync without
+re-running the ~3200 paid Claude enrichment calls.
 
 Usage (from inside backend/):
     python clean_course_html.py
@@ -58,17 +46,15 @@ class _TagStripper(HTMLParser):
 def strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities, collapsing whitespace left behind."""
     if not text or "<" not in text:
-        # Fast path: most fields (and every field on most courses) have no
-        # markup at all, so skip the parser entirely when there's no '<'.
+        # Fast path: most fields have no markup, so skip the parser when there's no '<'.
         return text
 
     parser = _TagStripper()
     parser.feed(text)
     cleaned = parser.get_text()
 
-    # Tags like </p><p> leave two adjacent spaces / no space at all where a
-    # paragraph break used to be — normalise all whitespace runs to one space
-    # so sentences don't run together or end up oddly spaced.
+    # Collapse whitespace runs to single spaces so removed tags don't leave
+    # sentences run together or oddly spaced.
     return " ".join(cleaned.split())
 
 

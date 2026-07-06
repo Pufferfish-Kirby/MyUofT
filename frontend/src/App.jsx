@@ -6,20 +6,14 @@ import './App.css'
 // Replace with your real Google Form URL when ready.
 const FEEDBACK_FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSeV9gY2k3tNVYtPfNwnnKFm97lkWSVtfrh_iTqfFMHJx6_gGA/viewform?usp=dialog'
 
-// WHY an env var instead of hardcoding: the same build needs to hit
-// localhost during development and the deployed Railway backend in
-// production. Vite exposes anything prefixed VITE_ from .env files (or the
-// hosting provider's dashboard, e.g. Vercel) via import.meta.env. Falling
-// back to localhost keeps local dev working with zero setup.
+// Reads the backend URL from a Vite env var so the same build can point at
+// localhost or the deployed Railway backend. Falls back to localhost so local
+// dev works with zero setup.
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// WHY a random per-browser id instead of real accounts: this is a Phase 1
-// MVP with no login system, but chat history still needs to be private per
-// visitor (the review database, by contrast, is intentionally shared/global).
-// A UUID generated once and cached in localStorage gives every browser a
-// stable identity across page reloads without any signup flow. It's sent as
-// the X-Device-Id header on chat requests; the backend uses it to scope which
-// sessions a request can see.
+// Gives each browser a stable anonymous id (a UUID cached in localStorage),
+// sent as the X-Device-Id header so the backend can keep chat history private
+// per visitor. Used instead of real accounts because Phase 1 has no login yet.
 function getDeviceId() {
   let id = localStorage.getItem('myuoft_device_id')
   if (!id) {
@@ -30,19 +24,10 @@ function getDeviceId() {
 }
 const DEVICE_ID = getDeviceId()
 
-// WHY this exists: Claude occasionally emits a bullet marker alone on its own
-// line, separated from the item's content (often a bold heading) by a blank
-// line — e.g. "•\n\nCSC311H1 — ..." or "-\n\n**CSC311H1 — ...**". CommonMark
-// only treats text as part of a list item if it follows the marker on the
-// same line or is indented under it; a blank line in between breaks that
-// link entirely. remark then parses the bare marker as an EMPTY list item
-// and the following text as an unrelated top-level paragraph — which is
-// exactly the "orphaned bullet, heading rendered on the next line" bug seen
-// in the chat UI. We repair this before handing text to ReactMarkdown by
-// collapsing a marker-only line (plus any blank lines after it) back onto
-// the same line as its content, and normalizing a literal "•" character
-// (which isn't markdown list syntax at all) into a real "-" marker so remark
-// treats it as a list item instead of stray text.
+// Fixes a bug where Claude sometimes puts a bullet marker alone on its own line
+// with a blank line before its content, which CommonMark renders as an orphaned
+// empty bullet. Collapses the marker back onto its content and turns literal "•"
+// characters into real "-" markers so remark treats them as list items.
 function normalizeMarkdownLists(text) {
   return text.replace(
     /^([ \t]*)(?:[-*+]|•)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=[ \t]*\S)/gm,
@@ -51,11 +36,9 @@ function normalizeMarkdownLists(text) {
 }
 
 // ── Shared markdown render config ───────────────────────────────────────────
-// Extracted to module scope (not redefined per-render) so BOTH the live
-// typewriter reveal and the settled/history render use byte-for-byte identical
-// styling. WHY this matters: if the typewriter and final render used different
-// component maps, finished messages would visibly "jump" in styling the instant
-// animation completed. Defining it once guarantees they don't.
+// One component map shared by both the typewriter reveal and the settled render.
+// Defined once at module scope so finished messages don't visibly restyle the
+// instant the animation completes.
 const MARKDOWN_COMPONENTS = {
   p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
@@ -65,11 +48,9 @@ const MARKDOWN_COMPONENTS = {
   h2: ({ children }) => <h2 className="font-semibold text-sm mt-2 mb-1">{children}</h2>,
   h3: ({ children }) => <h3 className="font-medium text-sm mt-1 mb-0.5">{children}</h3>,
   code: ({ children }) => <code className="bg-white/10 rounded px-1 py-0.5 text-xs font-mono">{children}</code>,
-  // WHY a custom li renderer: remark-gfm can emit list items with empty
-  // content when markdown has trailing `- ` bullet lines or whitespace-only
-  // entries. Without this guard those render as blank `• ` dots in the UI.
-  // We coerce children to a string to handle both plain text and nested
-  // React element arrays, then bail out (return null) if nothing printable.
+  // Skips list items with no printable content, which remark-gfm can emit for
+  // trailing "- " or whitespace-only lines and would otherwise show as blank
+  // dots. Coerces children to a string first to handle nested React elements.
   li: ({ children }) => {
     const text = typeof children === 'string' ? children : Array.isArray(children) ? children.join('') : String(children ?? '')
     if (!text.trim()) return null
@@ -78,23 +59,14 @@ const MARKDOWN_COMPONENTS = {
 }
 
 // ── TypewriterMarkdown ──────────────────────────────────────────────────────
-// Renders an assistant reply either instantly (history) or with a ChatGPT-style
-// progressive word reveal (fresh replies).
-//
-// HOW the `animate` flag drives behaviour:
-//   - animate === false  → render the full ReactMarkdown immediately. This is
-//     the path for messages restored from a past session via loadChat, which
-//     carry no `animate` flag, so they never re-type.
-//   - animate === true   → reveal a growing prefix of the text a few words per
-//     tick with a blinking caret, THEN, once the whole string is shown, fall
-//     through to the same full ReactMarkdown render. We reveal as plain text
-//     mid-stream (not markdown) because partial markdown is often malformed
-//     (an open ** or half a list), which would flicker; once complete we hand
-//     off to the real markdown renderer so the final styling is correct.
+// Renders an assistant reply either instantly (animate false, for history) or
+// with a ChatGPT-style word-by-word reveal (animate true, for fresh replies).
+// The reveal shows plain text mid-stream and switches to real markdown only
+// once complete, since partial markdown (an open ** or half a list) would flicker.
 function TypewriterMarkdown({ content, animate, onReveal }) {
   // visibleCount = how many words of `content` are currently shown.
   // Start fully revealed when not animating so static messages paint at once.
-  const words = content.split(/(\s+)/) // keep whitespace tokens so spacing is preserved
+  const words = content.split(/(\s+)/) // keep whitespace tokens so spacing survives
   const [visibleCount, setVisibleCount] = useState(animate ? 0 : words.length)
   const [done, setDone] = useState(!animate)
 
@@ -102,13 +74,9 @@ function TypewriterMarkdown({ content, animate, onReveal }) {
     if (!animate) return // history / already-settled: nothing to schedule
 
     let count = 0
-    // WHY 8/25 instead of the original 3/40: the reveal runs AFTER the full
-    // response already arrived from the network, so total perceived latency
-    // is network_time + reveal_time, not max(both). At 3 tokens/40ms, a
-    // near-max_tokens (1024) reply added ~20+ seconds of pure animation on
-    // top of the real ~4-5s API call — indistinguishable from the AI itself
-    // being slow. This pace still reads as a lively type-out (just under 3x
-    // faster) without ballooning reply time for long answers.
+    // Reveals 8 words every 25ms. The reveal runs after the full response has
+    // already arrived, so its time adds directly to perceived latency — the
+    // slower original 3/40 pace tacked ~20s of animation onto long replies.
     const CHUNK = 8
     const TICK_MS = 25
     const timer = setInterval(() => {
@@ -121,24 +89,20 @@ function TypewriterMarkdown({ content, animate, onReveal }) {
         setVisibleCount(count)
       }
       // Notify the parent each tick so it can keep the view scrolled to the
-      // bottom as the text grows (the `messages` array doesn't change during
-      // typing, so the parent's normal scroll effect wouldn't fire on its own).
+      // bottom as the text grows — `messages` doesn't change during typing, so
+      // its normal scroll effect wouldn't fire on its own.
       onReveal?.()
     }, TICK_MS)
 
-    // CRITICAL cleanup: clear the interval if the component unmounts (e.g. the
-    // user switches sessions mid-type) so we never call setState on an unmounted
-    // component or leak a runaway timer.
+    // Clear the interval on unmount (e.g. user switches sessions mid-type) so
+    // we don't setState on an unmounted component or leak a timer.
     return () => clearInterval(timer)
-    // Re-run only if the message identity changes. content+animate are stable
-    // for a given bubble, so this effect runs once per fresh reply.
+    // Deps are stable per bubble, so this effect runs once per fresh reply.
   }, [content, animate, words.length])
 
   // Once fully revealed, render the real markdown so final styling is exact.
-  // WHY normalize here (not earlier, e.g. on arrival from the API): this is
-  // the one spot both render paths (animate === false history restores, and
-  // the post-animation settle) funnel through, so fixing it here covers both
-  // without duplicating the call.
+  // We normalize here because both render paths (history restores and the
+  // post-animation settle) funnel through this spot, covering both at once.
   if (done) {
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
@@ -202,19 +166,14 @@ function App() {
   const [chatSessions, setChatSessions] = useState([])
   const [currentSessionId, setCurrentSessionId] = useState(null)
 
-  // WHY a separate open/closed flag instead of a CSS-only solution: below the
-  // md breakpoint the session sidebar becomes an off-canvas drawer (fixed,
-  // hidden by default) rather than sitting side-by-side with the chat panel —
-  // at phone widths the two columns don't have room to coexist (the sidebar's
-  // fixed width alone left ~150px for messages+input, which is why the input
-  // bar was getting pushed off-screen). Above md, this flag is ignored
-  // entirely (sidebar is always visible via the `md:flex` override).
+  // Tracks whether the mobile sidebar drawer is open. Below the md breakpoint
+  // the sidebar and chat can't fit side by side, so it becomes an off-canvas
+  // drawer; above md this flag is ignored (sidebar always shown via md:flex).
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  // editingIndex is the array index of the user message currently being edited
-  // (null when nothing is being edited). editingText holds the live textarea
-  // value while editing, kept separate from the message itself so Cancel can
-  // discard changes without having mutated `messages`.
+  // editingIndex is the array index of the message being edited (null if none).
+  // editingText holds the live textarea value, kept separate from the message
+  // so Cancel can discard changes without having mutated `messages`.
   const [editingIndex, setEditingIndex] = useState(null)
   const [editingText, setEditingText] = useState('')
 
@@ -231,32 +190,25 @@ function App() {
   // Ref to the bottom of the message list — we scroll to it after each new message
   // so the user always sees the latest response without manually scrolling.
   const messagesEndRef = useRef(null)
-  // scrollTick is bumped by the typewriter on every reveal tick. Including it in
-  // the scroll effect's deps lets us follow the growing text during typing,
-  // since `messages` itself doesn't change while a single bubble is animating.
+  // scrollTick is bumped by the typewriter each reveal tick, giving the scroll
+  // effect a dep that changes during typing (when `messages` itself doesn't) so
+  // the view keeps following the growing text.
   const [scrollTick, setScrollTick] = useState(0)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, chatLoading, scrollTick])
 
-  // Load the session list whenever the user switches to the chat tab.
-  // WHY not load at mount: the planner tab is the default, so we'd be making
-  // a network request for data the user may never need.  Lazy-loading on tab
-  // activation keeps startup fast.
-  //
-  // WHY filter to message_count > 0: sessions are created lazily (only when the
-  // first message is sent), so the sidebar only ever shows conversations that
-  // actually have content.  Any leftover empty sessions from earlier runs are
-  // hidden without needing a DB migration.
+  // Load the session list lazily when the chat tab opens, rather than at mount,
+  // to avoid a network request for data the user may never look at. The filter
+  // to message_count > 0 hides empty sessions, since rows are created lazily on
+  // the first message.
   useEffect(() => {
     if (activeTab === 'chat') refreshSessions()
   }, [activeTab])
 
-  // Re-fetch the session list so the sidebar picks up title changes (first
-  // message auto-renames a session) and newly-created sessions.
-  // WHY extracted: handleChatSend and handleEditMessage both need this exact
-  // refresh after a successful round-trip; keeping one copy means the filter
-  // condition only has to be right in one place.
+  // Re-fetch the session list so the sidebar picks up new sessions and title
+  // changes (the first message auto-renames one). Extracted so both send and
+  // edit flows share the same filter condition.
   function refreshSessions() {
     fetch(`${API_URL}/chats`, { headers: { 'X-Device-Id': DEVICE_ID } })
       .then(r => r.json())
@@ -272,10 +224,9 @@ function App() {
     setEditingIndex(null)
   }
 
-  // Fetch persisted messages for a past session and restore them into the UI.
-  // WHY replace messages outright instead of merging:
-  //     Each session is its own isolated conversation — we never want turns
-  //     from session A bleeding into session B's view.
+  // Fetch a past session's messages and restore them into the UI. Replaces the
+  // message list outright rather than merging, so turns from one session never
+  // bleed into another's view.
   async function loadChat(session) {
     try {
       const res = await fetch(`${API_URL}/chats/${session.id}/messages`, {
@@ -291,12 +242,9 @@ function App() {
     }
   }
 
-  // Shared POST to /chat — used for both brand-new messages and edited/resent
-  // ones. WHY extracted: the two flows send an identical body shape (message,
-  // history, session_id, optionally edit_message_id) and need to handle the
-  // same non-OK-response case, so a change to the request/response contract
-  // (e.g. the user_message_id/assistant_message_id fields added for editing)
-  // only has to happen in one place.
+  // Shared POST to /chat for both new and edited/resent messages. Extracted so
+  // both flows use one identical body shape and error handling, keeping the
+  // request/response contract in a single place.
   async function postChatMessage(text, history, sessionId, editMessageId = null) {
     const response = await fetch(`${API_URL}/chat`, {
       method: 'POST',
@@ -317,10 +265,9 @@ function App() {
     const text = inputValue.trim()
     if (!text || chatLoading) return
 
-    // Create the DB session on the very first message.
-    // WHY use a local variable instead of reading currentSessionId after setState:
-    //     setCurrentSessionId is async — the state won't have updated by the time
-    //     we build the fetch body below, so we capture the id here and use it directly.
+    // Create the DB session on the first message. Capture the id in a local
+    // rather than reading currentSessionId after setState, since setState is
+    // async and wouldn't be updated by the time we build the fetch body below.
     let sessionId = currentSessionId
     if (sessionId === null) {
       try {
@@ -347,11 +294,9 @@ function App() {
 
     try {
       const data = await postChatMessage(text, priorHistory, sessionId)
-      // Tag the reply with `animate: true` so TypewriterMarkdown reveals it
-      // word-by-word, and tag both turns with their DB ids so the user
-      // message can be edited later (editing needs a real row id, not an
-      // array index). Replies restored from history (loadChat) never carry
-      // `animate`, which is exactly what keeps past sessions from re-typing.
+      // Tag the reply with animate:true so it types out, and tag both turns with
+      // their DB ids so the user message can be edited later (editing needs a
+      // real row id). History replies lack animate, so they never re-type.
       setMessages([
         ...priorHistory,
         { role: 'user', content: text, id: data.user_message_id },
@@ -370,17 +315,15 @@ function App() {
     setEditingText('')
   }
 
-  // Edit a previously-sent user message and resend it. This discards every
-  // message after it (both locally and in the DB, via edit_message_id) since
-  // the old reply no longer applies to the corrected question — matches the
-  // "edit and resend" behaviour of ChatGPT-style assistants rather than
-  // trying to support branching conversations.
+  // Edit a past user message and resend it, discarding every message after it
+  // (locally and in the DB via edit_message_id) since the old reply no longer
+  // applies. Mirrors ChatGPT's edit-and-resend rather than branching threads.
   async function handleEditMessage(idx) {
     const trimmed = editingText.trim()
     const original = messages[idx]
     if (!trimmed || chatLoading || !original || original.role !== 'user') return
 
-    const priorHistory = messages.slice(0, idx) // everything strictly before the edited turn
+    const priorHistory = messages.slice(0, idx) // turns strictly before the edited one
     const fullConversationBeforeEdit = messages // kept to restore on failure
     setMessages([...priorHistory, { role: 'user', content: trimmed, id: original.id }])
     setEditingIndex(null)
@@ -410,8 +353,8 @@ function App() {
     // Prevent the default browser form navigation
     e.preventDefault()
 
-    // Parse interests into a clean array — trim whitespace and drop empties
-    // so "  math,  cs,  " becomes ["math", "cs"] instead of a messy list.
+    // Split interests into a clean array, trimming whitespace and dropping
+    // empties so "  math,  cs,  " becomes ["math", "cs"].
     const parsedInterests = interests
       .split(',')
       .map((s) => s.trim())
@@ -496,12 +439,9 @@ function App() {
   }
 
   return (
-    // Full-height dark-blue background — this is UofT's primary brand colour (#002A5C)
-    // WHY min-h-dvh, not min-h-screen (100vh): mobile browsers resize their
-    // address bar/toolbar while scrolling, but 100vh is fixed to the *largest*
-    // possible viewport at load. That mismatch is what caused the white gap
-    // visible when scrolling on phones — 100dvh tracks the actual visible
-    // viewport instead, so it never overshoots and leaves a sliver exposed.
+    // Full-height background in UofT's brand blue (#002A5C). Uses min-h-dvh, not
+    // min-h-screen (100vh), so it tracks the visible viewport as mobile toolbars
+    // resize — 100vh is fixed to the largest viewport and left a white gap on phones.
     <div className="min-h-dvh bg-uoft-blue flex flex-col">
 
       {/* ── Navbar ──
@@ -545,12 +485,10 @@ function App() {
       </header>
 
       {/* ── Main content ── */}
-      {/* WHY flex-col overflow-hidden instead of items-center justify-center:
-          each tab now manages its own centering/scrolling so the chat panel can
-          fill all remaining vertical space without fighting a fixed py-12 gutter. */}
+      {/* Uses flex-col overflow-hidden so each tab handles its own centering and
+          scrolling, letting the chat panel fill the remaining height. No max-w
+          here because the chat tab needs full width; other tabs constrain themselves. */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        {/* WHY w-full with no max-w here: the chat tab needs the full width for its
-            two-column layout; the planner tab constrains itself via its own wrapper. */}
         <div className="w-full flex-1 flex flex-col min-h-0">
 
         {/* ══════════════════════════════════════════
@@ -734,12 +672,9 @@ function App() {
             )}
 
             {/* ── Session sidebar ──
-                WHY `fixed` + `hidden md:flex` below md instead of a flex-col
-                stack: stacking the full session list above the chat would
-                push the message input further down the page on every load,
-                and a long chat history would bury it below the fold. An
-                off-canvas drawer keeps the input immediately visible while
-                still making past chats reachable via the toggle button. */}
+                Uses an off-canvas drawer (fixed + hidden md:flex) below md rather
+                than stacking above the chat, which would push the message input
+                below the fold. The toggle button keeps past chats reachable. */}
             <div className={`
               ${sidebarOpen ? 'flex' : 'hidden'} md:flex
               fixed md:static inset-y-0 left-0 z-40 md:z-auto
@@ -830,8 +765,7 @@ function App() {
                             value={editingText}
                             onChange={(e) => setEditingText(e.target.value)}
                             onKeyDown={(e) => {
-                              // Enter resends (matches the composer below);
-                              // Shift+Enter would be for a newline, Escape cancels.
+                              // Enter resends, Shift+Enter adds a newline, Escape cancels.
                               if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault()
                                 handleEditMessage(idx)
@@ -883,10 +817,9 @@ function App() {
                           {msg.role === 'assistant'
                             ? <TypewriterMarkdown
                                 content={msg.content}
-                                // Only fresh replies carry animate:true (set in
-                                // handleChatSend). History messages lack the flag →
-                                // render instantly. Coerced to boolean so undefined
-                                // (history) becomes a clean false.
+                                // Only fresh replies carry animate:true; history
+                                // messages lack it and render instantly. Coerced to
+                                // boolean so undefined becomes a clean false.
                                 animate={!!msg.animate}
                                 onReveal={() => setScrollTick((t) => t + 1)}
                               />
@@ -894,10 +827,9 @@ function App() {
                           }
                         </div>
 
-                        {/* Edit affordance — only on user messages, only once the
-                            message has a real DB id (a message that failed to
-                            save has no id to truncate from), hidden until hover
-                            so the thread doesn't look cluttered with icons. */}
+                        {/* Edit button — only on user messages that have a real DB
+                            id (a failed save has no id to truncate from), and hidden
+                            until hover so the thread stays uncluttered. */}
                         {isUser && (
                           <button
                             onClick={() => { setEditingIndex(idx); setEditingText(msg.content) }}
@@ -967,11 +899,9 @@ function App() {
         )}
 
         {/* ══════════════════════════════════════════
-            PLANNER TAB — existing form, unchanged.
-            WHY max-w-lg here instead of on the outer wrapper:
-                The chat tab needs the full viewport width for its two-column
-                layout, so the outer div no longer carries max-w.  We restore
-                the narrow constraint here so the planner form doesn't stretch.
+            PLANNER TAB
+            The max-w-lg lives here, not on the outer wrapper, because the chat
+            tab needs full width; this restores a narrow constraint for the form.
         ══════════════════════════════════════════ */}
         {activeTab === 'planner' && (
         <div className="flex-1 flex items-start justify-center px-4 py-12 overflow-y-auto">
@@ -989,10 +919,8 @@ function App() {
           </div>
 
           {/* ── Input form ── */}
-          {/* White card sits on the dark blue background for contrast */}
-          {/* shadow-2xl + ring give the white form card more lift off the dark
-              background; the planner is the primary CTA destination so it earns
-              the strongest depth on the page. */}
+          {/* White card on the dark blue background. shadow-2xl + ring give it
+              the strongest depth on the page, since the planner is the main CTA. */}
           <form
             onSubmit={handleSubmit}
             className="bg-white rounded-2xl shadow-2xl ring-1 ring-black/5 p-8 space-y-6"
@@ -1289,13 +1217,9 @@ function App() {
         </div>
       </main>
 
-      {/* Floating feedback button — fixed to viewport so it's reachable from any tab.
-          WHY hidden on mobile specifically while the chat tab is open: on phone
-          widths there's no room for it to sit anywhere near the message
-          composer without overlapping the Send button (padding tweaks kept
-          proving fragile against mobile browsers' dynamic toolbar height).
-          Hiding it there removes the overlap entirely instead of chasing
-          exact pixel clearance; it's still one tap away via the other tabs. */}
+      {/* Floating feedback button — fixed to the viewport so it's reachable from
+          any tab. Hidden on mobile while the chat tab is open because it would
+          overlap the Send button there; it's still one tap away via other tabs. */}
       <a
         href={FEEDBACK_FORM_URL}
         target="_blank"
@@ -1311,10 +1235,8 @@ function App() {
           active:translate-y-0 transition-all
         `}
       >
-        {/* Pencil icon. WHY icon-only below sm: the full "Feedback" pill was
-            wide enough to sit directly on top of the review-search bar on
-            phone widths — shrinking to just the icon keeps it reachable
-            without covering nearby inputs/buttons. */}
+        {/* Pencil icon. Shrinks to icon-only below sm because the full "Feedback"
+            pill was wide enough to cover the review-search bar on phone widths. */}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z" />

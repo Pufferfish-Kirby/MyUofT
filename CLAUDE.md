@@ -308,7 +308,7 @@ other access control.
 - **Don't trust AI output blindly.** Always validate generated plans against prerequisite data programmatically.
 - **Don't scrape UofT in production.** Scrape once, store as JSON/DB, update periodically. Don't hit their servers on every request.
 - **Don't forget about breadth requirements.** UofT Arts & Science has specific breadth/distribution requirements that must be satisfied — the planner must account for these.
-- **When generating code, add detailed comments explaining WHY each piece exists, not just what it does. Explain design decisions inline.** I still want to be learning a lot from this project so this is important.
+- **When generating code, add short comments explaining what each piece does and why it's built that way — keep them tight, not essays.** Aim for ~3 lines per comment: 1-2 sentences on what the code/process does, then 1 sentence on why that choice was made over the obvious alternative. Skip deep technical jargon where a plainer phrase works just as well. I still want to be learning a lot from this project (including being able to explain it in an interview / on my resume), so this is important — just keep it scannable.
 
 ---
 
