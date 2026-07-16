@@ -1,12 +1,12 @@
-# MyUofT
+# Prereq
 
-Course selection at the University of Toronto can be a long process where you have to go to multiple pages to get the information you need. MyUoft gives you one space to get everything you need, using AI-powered course advising. Ask it what you're interested in, get back real courses from the actual calendar, not a keyword match.
+Course selection at the University of Toronto can be a long process where you have to go to multiple pages to get the information you need. Prereq gives you one space to get everything you need, using AI-powered course advising. Ask it what you're interested in, get back real courses from the actual calendar, not a keyword match.
 
 **Live: [my-uoft.vercel.app](https://my-uoft.vercel.app)**
 
 ## What it does
 
-MyUofT is a app that knows the entire University of Toronto Faculty of Arts & Science course catalog and answers questions about it conversationally. Instead of digging through the Academic Calendar and trying to put the pieces together yourself, you describe what you want and it finds courses that actually fit your needs and shows you why it is best.
+Prereq is an app that knows the entire University of Toronto Faculty of Arts & Science course catalog and answers questions about it conversationally. Instead of digging through the Academic Calendar and trying to put the pieces together yourself, you describe what you want and it finds courses that actually fit your needs and shows you why it is best.
 
 ## How it works
 
